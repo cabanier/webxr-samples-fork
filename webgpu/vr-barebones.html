@@ -390,7 +390,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
                 colorAttachments: [{
                   view: subImage.colorTexture.createView(subImage.getViewDescriptor()),
                   // Clear the color texture to a solid color.
-                  loadOp: 'clear',
+                  loadOp: (viewIndex > 0) ? 'load' : 'clear',
                   storeOp: 'store',
                   // Clear to a non-black color so we can see if it's working
                   // even when the triangle isn't in view.
@@ -407,7 +407,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
             let vp = subImage.viewport;
             renderPass.setViewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
-
+            renderPass.setScissorRect(vp.x, vp.y, vp.width, vp.height);
             drawScene(renderPass, viewIndex);
 
             renderPass.end();
