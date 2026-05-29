@@ -1,0 +1,306 @@
+<!doctype html>
+<!--
+Copyright 2026 The Immersive Web Community Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'>
+    <meta name='mobile-web-app-capable' content='yes'>
+    <meta name='apple-mobile-web-app-capable' content='yes'>
+    <link rel='icon' type='image/png' sizes='32x32' href='favicon-32x32.png'>
+    <link rel='icon' type='image/png' sizes='96x96' href='favicon-96x96.png'>
+    <link rel='stylesheet' href='css/common.css'>
+
+    <title>Inline Stereo Session</title>
+  </head>
+  <body>
+    <header>
+      <details open>
+        <summary>Inline Stereo Session</summary>
+        <p>
+          This sample demonstrates use of an 'inline-stereo' XRSession to
+          present stereo WebXR content directly on the page. The stereo
+          panorama uses eye-specific source imagery, and the solar system model
+          is rendered once for each XRView. The viewer pose can be adjusted by
+          clicking and dragging with mouse or touch.
+          <a class="back" href="./">Back</a>
+        </p>
+        <p>
+          <input id='vertFOV' value='90' min='30' max='150' step='10' type='range'/><br/>
+          <label id='vertFOVLabel' for="vertFOV">Vertical FOV: </label>
+        </p>
+        <p>
+          <button id='startInlineStereo' disabled>Start Inline Stereo</button>
+        </p>
+        <p id='inlineStereoStatus'>Checking inline-stereo support...</p>
+      </details>
+    </header>
+    <script type="module">
+      import {Scene} from './js/render/scenes/scene.js';
+      import {Renderer, createWebGLContext} from './js/render/core/renderer.js';
+      import {Gltf2Node} from './js/render/nodes/gltf2.js';
+      import {SkyboxNode} from './js/render/nodes/skybox.js';
+      import {quat} from './js/render/math/gl-matrix.js';
+
+      const INLINE_STEREO_MODE = 'inline-stereo';
+
+      let inlineStereoSession = null;
+      let xrInlineStereoRefSpace = null;
+      let fov = document.getElementById('vertFOV');
+      let fovLabel = document.getElementById('vertFOVLabel');
+      let startButton = document.getElementById('startInlineStereo');
+      let inlineStereoStatus = document.getElementById('inlineStereoStatus');
+
+      function updateFov() {
+        let value = parseFloat(fov.value);
+        let radValue = value * (Math.PI / 180);
+
+        if (inlineStereoSession) {
+          inlineStereoSession.updateRenderState({
+            inlineVerticalFieldOfView: radValue
+          });
+        }
+
+        let label = `Vertical FOV: ${value} degrees`;
+        if (value == 90) {
+          label += ' (default)';
+        }
+        fovLabel.textContent = label;
+      }
+      fov.addEventListener('change', updateFov);
+      updateFov();
+
+      startButton.addEventListener('click', () => {
+        requestInlineStereoSession();
+      });
+
+      // WebGL scene globals.
+      let gl = null;
+      let renderer = null;
+      let scene = new Scene();
+      let solarSystem = new Gltf2Node({url: 'media/gltf/space/space.gltf'});
+      scene.addNode(solarSystem);
+      scene.addNode(new SkyboxNode({url: 'media/textures/milky-way-4k.png'}));
+
+      async function initXR() {
+        if (!navigator.xr) {
+          setStatus('WebXR is not available in this browser.');
+          return;
+        }
+
+        let supported = false;
+        try {
+          supported = await navigator.xr.isSessionSupported(INLINE_STEREO_MODE);
+        } catch (err) {
+          setStatus(`Unable to query inline-stereo support: ${err.message}`);
+          return;
+        }
+
+        if (!supported) {
+          setStatus('inline-stereo sessions are not supported by this browser.');
+          return;
+        }
+
+        startButton.disabled = false;
+        setStatus('inline-stereo is supported. Click Start Inline Stereo to begin.');
+      }
+
+      async function requestInlineStereoSession() {
+        if (inlineStereoSession) {
+          return;
+        }
+
+        startButton.disabled = true;
+        setStatus('Requesting inline-stereo session...');
+
+        try {
+          let session = await navigator.xr.requestSession(INLINE_STEREO_MODE);
+          inlineStereoSession = session;
+          onSessionStarted(session);
+          updateFov();
+        } catch (err) {
+          startButton.disabled = false;
+          setStatus(`Failed to start inline-stereo session: ${err.message}`);
+        }
+      }
+
+      function onSessionStarted(session) {
+        session.addEventListener('end', onSessionEnded);
+
+        if (!gl) {
+          gl = createWebGLContext({
+            xrCompatible: true
+          });
+
+          document.body.appendChild(gl.canvas);
+
+          function onResize() {
+            gl.canvas.width = gl.canvas.clientWidth * window.devicePixelRatio;
+            gl.canvas.height = gl.canvas.clientHeight * window.devicePixelRatio;
+          }
+          window.addEventListener('resize', onResize);
+          onResize();
+
+          addInlineViewListeners(gl.canvas);
+
+          renderer = new Renderer(gl);
+
+          scene.setRenderer(renderer);
+        }
+
+        let glLayer = new XRWebGLLayer(session, gl);
+
+        session.updateRenderState({
+          baseLayer: glLayer
+        });
+
+        session.requestReferenceSpace('viewer').then((refSpace) => {
+          xrInlineStereoRefSpace = refSpace;
+          session.requestAnimationFrame(onXRFrame);
+        });
+      }
+
+      function onSessionEnded() {
+        inlineStereoSession = null;
+        xrInlineStereoRefSpace = null;
+        startButton.disabled = false;
+        setStatus('inline-stereo session ended.');
+      }
+
+      function onXRFrame(t, frame) {
+        let session = frame.session;
+        let refSpace = getAdjustedRefSpace(xrInlineStereoRefSpace);
+        let pose = frame.getViewerPose(refSpace);
+
+        scene.startFrame();
+
+        session.requestAnimationFrame(onXRFrame);
+
+        if (pose) {
+          updateInlineStereoStatus(pose);
+
+          let glLayer = session.renderState.baseLayer;
+          gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+          for (let view of pose.views) {
+            let viewport = glLayer.getViewport(view);
+            gl.viewport(viewport.x, viewport.y,
+                        viewport.width, viewport.height);
+
+            scene.draw(view.projectionMatrix, view.transform, renderEyeForView(view));
+          }
+        } else {
+          setStatus('inline-stereo session is running, but no viewer pose is available.');
+        }
+
+        scene.endFrame();
+      }
+
+      function renderEyeForView(view) {
+        return view.eye == 'right' ? 'right' : 'left';
+      }
+
+      function updateInlineStereoStatus(pose) {
+        let viewList = pose.views.map((view) => view.eye).join(', ');
+        setStatus(`inline-stereo session: ${pose.views.length} view(s) (${viewList})`);
+      }
+
+      function setStatus(message) {
+        inlineStereoStatus.textContent = message;
+      }
+
+      // Inline view adjustment code
+      let lookYaw = 0;
+      let lookPitch = 0;
+      const LOOK_SPEED = 0.0025;
+
+      function getAdjustedRefSpace(refSpace) {
+        let invOrientation = quat.create();
+        quat.rotateX(invOrientation, invOrientation, -lookPitch);
+        quat.rotateY(invOrientation, invOrientation, -lookYaw);
+        let xform = new XRRigidTransform(
+            {x: 0, y: 0, z: 0},
+            {x: invOrientation[0], y: invOrientation[1], z: invOrientation[2], w: invOrientation[3]});
+        return refSpace.getOffsetReferenceSpace(xform);
+      }
+
+      function rotateView(dx, dy) {
+        lookYaw += dx * LOOK_SPEED;
+        lookPitch += dy * LOOK_SPEED;
+        if (lookPitch < -Math.PI*0.5)
+            lookPitch = -Math.PI*0.5;
+        if (lookPitch > Math.PI*0.5)
+            lookPitch = Math.PI*0.5;
+      }
+
+      function addInlineViewListeners(canvas) {
+        canvas.addEventListener('mousemove', (event) => {
+          if (event.buttons & 2) {
+            rotateView(event.movementX, event.movementY);
+          }
+        });
+
+        let primaryTouch = undefined;
+        let prevTouchX = undefined;
+        let prevTouchY = undefined;
+
+        canvas.addEventListener("touchstart", (event) => {
+          if (primaryTouch == undefined) {
+            let touch = event.changedTouches[0];
+            primaryTouch = touch.identifier;
+            prevTouchX = touch.pageX;
+            prevTouchY = touch.pageY;
+          }
+        });
+
+        canvas.addEventListener("touchend", (event) => {
+          for (let touch of event.changedTouches) {
+            if (primaryTouch == touch.identifier) {
+              primaryTouch = undefined;
+              rotateView(touch.pageX - prevTouchX, touch.pageY - prevTouchY);
+            }
+          }
+        });
+
+        canvas.addEventListener("touchcancel", (event) => {
+          for (let touch of event.changedTouches) {
+            if (primaryTouch == touch.identifier) {
+              primaryTouch = undefined;
+            }
+          }
+        });
+
+        canvas.addEventListener("touchmove", (event) => {
+          for (let touch of event.changedTouches) {
+            if (primaryTouch == touch.identifier) {
+              rotateView(touch.pageX - prevTouchX, touch.pageY - prevTouchY);
+              prevTouchX = touch.pageX;
+              prevTouchY = touch.pageY;
+            }
+          }
+        });
+      }
+
+      initXR();
+    </script>
+  </body>
+</html>
