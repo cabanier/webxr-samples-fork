@@ -67,6 +67,37 @@ void main() {
 }
 `;
 
+const VERTEX_SHADER_MOTION_ENTRY = `
+uniform mat4 PROJECTION_MATRIX, VIEW_MATRIX, MODEL_MATRIX;
+uniform mat4 PREV_PROJECTION_MATRIX, PREV_VIEW_MATRIX, PREV_MODEL_MATRIX;
+out highp vec4 vMotionClipPosition;
+out highp vec4 vMotionPrevClipPosition;
+
+void main() {
+  vMotionClipPosition = vertex_main(PROJECTION_MATRIX, VIEW_MATRIX, MODEL_MATRIX);
+  vMotionPrevClipPosition = vertex_main(PREV_PROJECTION_MATRIX, PREV_VIEW_MATRIX, PREV_MODEL_MATRIX);
+  gl_Position = vMotionClipPosition;
+}
+`;
+
+const VERTEX_SHADER_MOTION_MULTI_ENTRY = `
+uniform mat4 LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX;
+uniform mat4 PREV_LEFT_PROJECTION_MATRIX, PREV_LEFT_VIEW_MATRIX, PREV_RIGHT_PROJECTION_MATRIX, PREV_RIGHT_VIEW_MATRIX, PREV_MODEL_MATRIX;
+out highp vec4 vMotionClipPosition;
+out highp vec4 vMotionPrevClipPosition;
+
+void main() {
+  if (gl_ViewID_OVR == 0u) {
+    vMotionClipPosition = vertex_main(LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, MODEL_MATRIX);
+    vMotionPrevClipPosition = vertex_main(PREV_LEFT_PROJECTION_MATRIX, PREV_LEFT_VIEW_MATRIX, PREV_MODEL_MATRIX);
+  } else {
+    vMotionClipPosition = vertex_main(RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX);
+    vMotionPrevClipPosition = vertex_main(PREV_RIGHT_PROJECTION_MATRIX, PREV_RIGHT_VIEW_MATRIX, PREV_MODEL_MATRIX);
+  }
+  gl_Position = vMotionClipPosition;
+}
+`;
+
 const FRAGMENT_SHADER_ENTRY = `
 out vec4 color;
 void main() {
@@ -78,6 +109,20 @@ const FRAGMENT_SHADER_MULTI_ENTRY = `
 out vec4 color;
 void main() {
   color = fragment_main();
+}
+`;
+
+const FRAGMENT_SHADER_MOTION_ENTRY = `
+precision highp float;
+in highp vec4 vMotionClipPosition;
+in highp vec4 vMotionPrevClipPosition;
+out vec4 color;
+
+void main() {
+  highp vec4 motionVector =
+      (vMotionClipPosition / vMotionClipPosition.w) -
+      (vMotionPrevClipPosition / vMotionPrevClipPosition.w);
+  color = motionVector;
 }
 `;
 
@@ -695,7 +740,14 @@ class RenderMaterial {
 }
 
 export class Renderer {
-  constructor(gl, multiview, multisampledMultiview, useDepth) {
+  constructor(gl, multiview, multisampledMultiview, useDepth, motionVectorPass) {
+    const options = typeof multiview == 'object' ? multiview : {
+      multiview: multiview,
+      multisampledMultiview: multisampledMultiview,
+      useDepth: useDepth,
+      motionVectorPass: motionVectorPass,
+    };
+
     this._gl = gl || createWebGLContext();
     this._frameId = 0;
     this._programCache = {};
@@ -716,9 +768,10 @@ export class Renderer {
 
     this._mv_ext = gl.getExtension('OVR_multiview2');
 
-    this._multiview = multiview && this._mv_ext;
-    this._multisampledMultiview = multisampledMultiview;
-    this._useDepth = useDepth;
+    this._multiview = options.multiview && this._mv_ext;
+    this._multisampledMultiview = options.multisampledMultiview;
+    this._useDepth = options.useDepth;
+    this._motionVectorPass = options.motionVectorPass;
   }
 
   get gl() {
@@ -735,6 +788,14 @@ export class Renderer {
 
   get multiviewExtension() {
     return this._mv_ext;
+  }
+
+  get motionVectorPass() {
+    return this._motionVectorPass;
+  }
+
+  get useDepth() {
+    return this._useDepth;
   }
 
   get xrFramebuffer() {
@@ -917,8 +978,16 @@ export class Renderer {
         if (views.length == 1) {
           gl.uniformMatrix4fv(program.uniform.PROJECTION_MATRIX, false, views[0].projectionMatrix);
           gl.uniformMatrix4fv(program.uniform.VIEW_MATRIX, false, views[0].viewMatrix);
-          gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[0]);
-          gl.uniform1i(program.uniform.EYE_INDEX, views[0].eyeIndex);
+          if (this._motionVectorPass) {
+            gl.uniformMatrix4fv(program.uniform.PREV_PROJECTION_MATRIX, false, views[0].previousProjectionMatrix || views[0].projectionMatrix);
+            gl.uniformMatrix4fv(program.uniform.PREV_VIEW_MATRIX, false, views[0].previousViewMatrix || views[0].viewMatrix);
+          }
+          if (program.uniform.CAMERA_POSITION) {
+            gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[0]);
+          }
+          if (program.uniform.EYE_INDEX) {
+            gl.uniform1i(program.uniform.EYE_INDEX, views[0].eyeIndex);
+          }
         }
       }
 
@@ -954,15 +1023,33 @@ export class Renderer {
               gl.uniformMatrix4fv(program.uniform.LEFT_VIEW_MATRIX, false, views[0].viewMatrix);
               gl.uniformMatrix4fv(program.uniform.RIGHT_PROJECTION_MATRIX, false, views[1].projectionMatrix);
               gl.uniformMatrix4fv(program.uniform.RIGHT_VIEW_MATRIX, false, views[1].viewMatrix);
+              if (this._motionVectorPass) {
+                gl.uniformMatrix4fv(program.uniform.PREV_LEFT_PROJECTION_MATRIX, false, views[0].previousProjectionMatrix || views[0].projectionMatrix);
+                gl.uniformMatrix4fv(program.uniform.PREV_LEFT_VIEW_MATRIX, false, views[0].previousViewMatrix || views[0].viewMatrix);
+                gl.uniformMatrix4fv(program.uniform.PREV_RIGHT_PROJECTION_MATRIX, false, views[1].previousProjectionMatrix || views[1].projectionMatrix);
+                gl.uniformMatrix4fv(program.uniform.PREV_RIGHT_VIEW_MATRIX, false, views[1].previousViewMatrix || views[1].viewMatrix);
+              }
             }
             // TODO(AB): modify shaders which use CAMERA_POSITION and EYE_INDEX to work with Multiview
-            gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[i]);
-            gl.uniform1i(program.uniform.EYE_INDEX, view.eyeIndex);
+            if (program.uniform.CAMERA_POSITION) {
+              gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[i]);
+            }
+            if (program.uniform.EYE_INDEX) {
+              gl.uniform1i(program.uniform.EYE_INDEX, view.eyeIndex);
+            }
           } else {
             gl.uniformMatrix4fv(program.uniform.PROJECTION_MATRIX, false, view.projectionMatrix);
             gl.uniformMatrix4fv(program.uniform.VIEW_MATRIX, false, view.viewMatrix);
-            gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[i]);
-            gl.uniform1i(program.uniform.EYE_INDEX, view.eyeIndex);
+            if (this._motionVectorPass) {
+              gl.uniformMatrix4fv(program.uniform.PREV_PROJECTION_MATRIX, false, view.previousProjectionMatrix || view.projectionMatrix);
+              gl.uniformMatrix4fv(program.uniform.PREV_VIEW_MATRIX, false, view.previousViewMatrix || view.viewMatrix);
+            }
+            if (program.uniform.CAMERA_POSITION) {
+              gl.uniform3fv(program.uniform.CAMERA_POSITION, this._cameraPositions[i]);
+            }
+            if (program.uniform.EYE_INDEX) {
+              gl.uniform1i(program.uniform.EYE_INDEX, view.eyeIndex);
+            }
 
             if (depthData && depthData.length) {
               gl.uniform1ui(program.uniform.VIEW_ID, i);
@@ -998,6 +1085,10 @@ export class Renderer {
             continue;
           }
 
+          if (this._motionVectorPass) {
+            this._prepareMotionVectorInstance(instance);
+            gl.uniformMatrix4fv(program.uniform.PREV_MODEL_MATRIX, false, instance._motionVectorPreviousWorldMatrix);
+          }
           gl.uniformMatrix4fv(program.uniform.MODEL_MATRIX, false, instance.worldMatrix);
 
           if (primitive._indexBuffer) {
@@ -1012,6 +1103,21 @@ export class Renderer {
         }
       }
     }
+  }
+
+  _prepareMotionVectorInstance(instance) {
+    if (instance._motionVectorFrameId == this._frameId) {
+      return;
+    }
+
+    if (!instance._motionVectorPreviousWorldMatrix) {
+      instance._motionVectorPreviousWorldMatrix = mat4.clone(instance.worldMatrix);
+      instance._motionVectorCurrentWorldMatrix = mat4.clone(instance.worldMatrix);
+    } else {
+      mat4.copy(instance._motionVectorPreviousWorldMatrix, instance._motionVectorCurrentWorldMatrix);
+      mat4.copy(instance._motionVectorCurrentWorldMatrix, instance.worldMatrix);
+    }
+    instance._motionVectorFrameId = this._frameId;
   }
 
   addExternalTexture(key, texture, isArray) {
@@ -1110,7 +1216,7 @@ export class Renderer {
     let materialName = material.materialName;
     material.useDepth = this.useDepth;
     let vertexSource = material.vertexSource;
-    let fragmentSource = material.fragmentSource;
+    let fragmentSource = this._motionVectorPass ? FRAGMENT_SHADER_MOTION_ENTRY : material.fragmentSource;
 
     // These should always be defined for every material
     if (materialName == null) {
@@ -1137,7 +1243,9 @@ export class Renderer {
       return this._programCache[key];
     } else {
       let fullVertexSource = vertexSource;
-      if (this._useDepth) {
+      if (this._motionVectorPass) {
+        fullVertexSource += this.multiview ? VERTEX_SHADER_MOTION_MULTI_ENTRY : VERTEX_SHADER_MOTION_ENTRY;
+      } else if (this._useDepth) {
         fullVertexSource += this.multiview ? VERTEX_SHADER_MULTI_DEPTH_ENTRY : VERTEX_SHADER_DEPTH_ENTRY;
       } else {
         fullVertexSource += this.multiview ? VERTEX_SHADER_MULTI_ENTRY : VERTEX_SHADER_ENTRY;
@@ -1148,7 +1256,9 @@ export class Renderer {
 
       let fullFragmentSource = fragPrecisionHeader + fragmentSource;
 
-      if (this._useDepth) {
+      if (this._motionVectorPass) {
+        // Motion-vector shaders provide their own fragment entry point.
+      } else if (this._useDepth) {
         fullFragmentSource += this.multiview ? FRAGMENT_SHADER_MULTI_DEPTH_ENTRY : FRAGMENT_SHADER_DEPTH_ENTRY;
       } else {
         fullFragmentSource += this.multiview ? FRAGMENT_SHADER_MULTI_ENTRY : FRAGMENT_SHADER_ENTRY
