@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-Copyright 2018 The Immersive Web Community Group
+Copyright 2026 The Immersive Web Community Group
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -43,7 +43,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           <a class="back" href="./">Back</a>
         </p>
         <p id="spacewarp-status"></p>
-        <input type="checkbox" id="do_antialias">antialias</input>
+        <label><input type="checkbox" id="use_multiview" disabled>multiview</label>
+        <label><input type="checkbox" id="do_antialias" disabled>MSAA</label>
       </details>
     </header>
     <script type="module">
@@ -67,13 +68,31 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       }
 
       // XR globals.
+      let useMultiview = document.getElementById('use_multiview');
       let doAntialias = document.getElementById('do_antialias');
       let xrButton = null;
       let xrImmersiveRefSpace = null;
       let inlineViewerHelper = null;
       let xrGLFactory = null;
-      let xrColorFramebuffer = null;
+      let colorFramebuffer = null;
+      let colorMsaaFramebuffer = null;
       let xrMotionFramebuffer = null;
+      let colorMsaaColorRenderbuffer = null;
+      let colorMsaaDepthRenderbuffer = null;
+      let colorMsaaWidth = 0;
+      let colorMsaaHeight = 0;
+      let colorMsaaSamples = 0;
+      let colorDepthRenderbuffer = null;
+      let colorDepthRenderbufferWidth = 0;
+      let colorDepthRenderbufferHeight = 0;
+      let colorPassUsesMsaa = false;
+      let spaceWarpCapabilities = {
+        compatible: false,
+        multiview: false,
+        msaa: false,
+        multiviewMsaa: false,
+        msaaSamples: 0,
+      };
 
       // WebGL scene globals.
       let gl = null;
@@ -92,6 +111,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       let currentlyGrabbedBoxes = [null, null];
       const previousMatrices = {};
 
+      // Builds the cube-room scene and selectable boxes for a given renderer.
       function createSelectionScene(targetRenderer) {
         const targetScene = new Scene();
         targetScene.addNode(new Gltf2Node({url: '../media/gltf/cube-room/cube-room.gltf'}));
@@ -103,6 +123,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         boxBuilder.pushCube([0, 0, 0], 0.4);
         const boxPrimitive = boxBuilder.finishPrimitive(targetRenderer);
 
+        // Adds one selectable box and tracks the sample state stored outside the scene graph.
         function addBox(x, y, z, r, g, b) {
           const boxMaterial = new PbrMaterial();
           boxMaterial.baseColorFactor.value = [r, g, b, 1.0];
@@ -132,6 +153,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         return {scene: targetScene, boxes: targetBoxes};
       }
 
+      // Creates the XR button, probes support, and starts the inline preview session.
       function initXR() {
         xrButton = new WebXRButton({
           onRequestSession: onRequestSession,
@@ -141,34 +163,105 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
         if (navigator.xr) {
           navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
-            const compatible = testSpaceWarpCompatibility();
+            spaceWarpCapabilities = testSpaceWarpCompatibility();
+            updateFeatureControls();
             document.querySelector('#spacewarp-status').textContent =
-                compatible ?
+                spaceWarpCapabilities.compatible ?
                   'Projection-layer Space Warp path is available.' :
-                  'Projection-layer Space Warp path needs WebGL2 multiview and half-float render targets.';
-            xrButton.enabled = supported && compatible;
+                  'Projection-layer Space Warp path needs WebGL2 and renderable half-float color targets.';
+            xrButton.enabled = supported && spaceWarpCapabilities.compatible;
           });
 
           navigator.xr.requestSession('inline').then(onSessionStarted);
         }
       }
 
+      // Probes the WebGL capabilities needed by the Space Warp projection-layer paths.
+      function getSpaceWarpCapabilities(testGl) {
+        const multiview = getMultiviewExtension(testGl);
+        const hasHalfFloatRenderTarget =
+            !!testGl.getExtension('EXT_color_buffer_float') ||
+            !!testGl.getExtension('EXT_color_buffer_half_float');
+        const msaaSamples = Math.min(
+            getMaxRenderableSamples(testGl, testGl.RGBA8),
+            getMaxRenderableSamples(testGl, testGl.DEPTH_COMPONENT24));
+
+        return {
+          compatible: hasHalfFloatRenderTarget,
+          multiview: !!multiview,
+          msaa: msaaSamples > 0,
+          multiviewMsaa: !!multiview &&
+              !!multiview.framebufferTextureMultisampleMultiviewOVR &&
+              msaaSamples > 0,
+          msaaSamples: msaaSamples,
+        };
+      }
+
+      // Returns whichever multiview extension variant the browser exposes.
+      function getMultiviewExtension(context) {
+        return context.getExtension('OCULUS_multiview') ||
+            context.getExtension('OVR_multiview2');
+      }
+
+      // Finds the maximum renderbuffer sample count for an internal format.
+      function getMaxRenderableSamples(context, internalFormat) {
+        if (!context.getInternalformatParameter) {
+          return context.getParameter(context.MAX_SAMPLES) || 0;
+        }
+
+        const samples = context.getInternalformatParameter(
+            context.RENDERBUFFER,
+            internalFormat,
+            context.SAMPLES);
+        return samples && samples.length ? samples[0] : 0;
+      }
+
+      // Uses a temporary context so the feature controls can be initialized before the main context exists.
       function testSpaceWarpCompatibility() {
         const tempGl = createWebGLContext({
           xrCompatible: true,
           webgl2: true
         });
         if (!tempGl) {
-          return false;
+          return {
+            compatible: false,
+            multiview: false,
+            msaa: false,
+            multiviewMsaa: false,
+            msaaSamples: 0,
+          };
         }
 
-        const compatible =
-            !!tempGl.getExtension('OVR_multiview2') &&
-            !!tempGl.getExtension('EXT_color_buffer_half_float');
+        const capabilities = getSpaceWarpCapabilities(tempGl);
         tempGl.canvas.remove();
-        return compatible;
+        return capabilities;
       }
 
+      // Enables UI toggles only for rendering paths supported by the current WebGL capabilities.
+      function updateFeatureControls() {
+        useMultiview.disabled = !spaceWarpCapabilities.multiview;
+        if (!spaceWarpCapabilities.multiview) {
+          useMultiview.checked = false;
+        } else if (!useMultiview.dataset.initialized) {
+          useMultiview.checked = true;
+        }
+
+        doAntialias.disabled =
+            !spaceWarpCapabilities.msaa ||
+            (useMultiview.checked && !spaceWarpCapabilities.multiviewMsaa);
+        if (doAntialias.disabled) {
+          doAntialias.checked = false;
+        } else if (!doAntialias.dataset.initialized) {
+          doAntialias.checked = true;
+        }
+
+        useMultiview.dataset.initialized = 'true';
+        doAntialias.dataset.initialized = 'true';
+      }
+
+      useMultiview.addEventListener('change', updateFeatureControls);
+
+      // Creates the shared WebGL2 context and caches extension support.
       function initGL() {
         if (gl)
           return;
@@ -179,14 +272,15 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         });
         document.body.appendChild(gl.canvas);
 
-        multiviewExtension = gl.getExtension('OVR_multiview2');
-        if (!multiviewExtension) {
-          console.error('Space Warp sample requires OVR_multiview2.');
-        }
-        if (!gl.getExtension('EXT_color_buffer_half_float')) {
-          console.error('Space Warp sample requires EXT_color_buffer_half_float.');
+        spaceWarpCapabilities = getSpaceWarpCapabilities(gl);
+        updateFeatureControls();
+
+        multiviewExtension = getMultiviewExtension(gl);
+        if (!spaceWarpCapabilities.compatible) {
+          console.error('Space Warp sample requires renderable half-float color targets.');
         }
 
+        // Matches the inline canvas backing store to its CSS size and device pixel ratio.
         function onResize() {
           gl.canvas.width = gl.canvas.clientWidth * window.devicePixelRatio;
           gl.canvas.height = gl.canvas.clientHeight * window.devicePixelRatio;
@@ -197,6 +291,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         gl.clearColor(0.1, 0.2, 0.3, 1.0);
       }
 
+      // Requests the immersive session with layers and Space Warp as required features.
       function onRequestSession() {
         return navigator.xr.requestSession('immersive-vr', {
           requiredFeatures: ['local-floor', 'layers', 'space-warp']
@@ -207,6 +302,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         });
       }
 
+      // Initializes renderers, scenes, and XR layers for either inline or immersive mode.
       function onSessionStarted(session) {
         session.addEventListener('end', onSessionEnded);
         session.addEventListener('selectstart', onSelectStart);
@@ -221,12 +317,22 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         currentlyGrabbedBoxes = [null, null];
 
         if (session.isImmersive) {
+          const enableMultiview =
+              spaceWarpCapabilities.multiview && useMultiview.checked;
+          const enableMsaa =
+              spaceWarpCapabilities.msaa &&
+              doAntialias.checked &&
+              (!enableMultiview || spaceWarpCapabilities.multiviewMsaa);
+          colorPassUsesMsaa = enableMsaa;
+          const enableMultiviewMsaa =
+              enableMultiview && enableMsaa && spaceWarpCapabilities.multiviewMsaa;
+
           renderer = new Renderer(gl, {
-            multiview: true,
-            multisampledMultiview: doAntialias.checked
+            multiview: enableMultiview,
+            multisampledMultiview: enableMultiviewMsaa
           });
           motionRenderer = new Renderer(gl, {
-            multiview: true,
+            multiview: enableMultiview,
             motionVectorPass: true
           });
           const sceneState = createSelectionScene(renderer);
@@ -239,12 +345,16 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           scene.inputRenderer.useProfileControllerMeshes(session);
           motionScene.inputRenderer.useProfileControllerMeshes(session);
 
-          xrColorFramebuffer = gl.createFramebuffer();
+          resetColorTargets();
+          colorFramebuffer = gl.createFramebuffer();
+          colorMsaaFramebuffer = gl.createFramebuffer();
           xrMotionFramebuffer = gl.createFramebuffer();
           xrGLFactory = new XRWebGLBinding(session, gl);
           const layer = xrGLFactory.createProjectionLayer({
             textureType: 'texture-array',
-            depthFormat: gl.DEPTH_COMPONENT24
+            colorFormat: gl.RGBA8,
+            depthFormat: gl.DEPTH_COMPONENT24,
+            clearOnAccess: false
           });
           session.updateRenderState({layers: [layer]});
         } else {
@@ -273,10 +383,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         });
       }
 
+      // Ends the current session when the XR button exits presentation.
       function onEndSession(session) {
         session.end();
       }
 
+      // Clears immersive-only state that should not leak into a future session.
       function onSessionEnded(event) {
         if (event.session.isImmersive) {
           xrButton.setSession(null);
@@ -286,16 +398,19 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }
       }
 
+      // Chooses the reference space used to interpret input event poses.
       function getEventRefSpace(session) {
         return session.isImmersive ?
             xrImmersiveRefSpace :
             inlineViewerHelper.referenceSpace;
       }
 
+      // Maps left and right hands to the small per-hand state arrays.
       function getHandIndex(inputSource) {
         return inputSource.handedness == 'left' ? 0 : 1;
       }
 
+      // Finds the selectable box currently hit by an input source target ray.
       function findHitBox(frame, inputSource) {
         const refSpace = getEventRefSpace(frame.session);
         const targetRayPose = frame.getPose(inputSource.targetRaySpace, refSpace);
@@ -311,6 +426,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         return boxes.find(box => hitResult.node == box.node) || null;
       }
 
+      // Marks a box as a pending select target and previews the interaction.
       function onSelectStart(ev) {
         const hitBox = findHitBox(ev.frame, ev.inputSource);
         if (!hitBox) {
@@ -323,6 +439,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         hitBox.selected = false;
       }
 
+      // Completes or cancels the pending select visual state for a hand.
       function onSelectEnd(ev) {
         const handIndex = getHandIndex(ev.inputSource);
         const selectedBox = currentlySelectedBoxes[handIndex];
@@ -339,6 +456,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         currentlySelectedBoxes[handIndex] = null;
       }
 
+      // Applies the sample's select action: randomize color and shrink the box.
       function onSelect(ev) {
         const handIndex = getHandIndex(ev.inputSource);
         const selectedBox = currentlySelectedBoxes[handIndex];
@@ -352,6 +470,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         selectedBox.selected = true;
       }
 
+      // Starts a grab interaction for the hit box.
       function onSqueezeStart(ev) {
         const hitBox = findHitBox(ev.frame, ev.inputSource);
         if (!hitBox || hitBox.grabbed) {
@@ -365,6 +484,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         hitBox.grabbed = true;
       }
 
+      // Restores a grabbed box when the squeeze interaction ends.
       function onSqueezeEnd(ev) {
         const handIndex = getHandIndex(ev.inputSource);
         const grabbedBox = currentlyGrabbedBoxes[handIndex];
@@ -378,6 +498,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         currentlyGrabbedBoxes[handIndex] = null;
       }
 
+      // Applies the sample's squeeze action while a box is grabbed.
       function onSqueeze(ev) {
         const handIndex = getHandIndex(ev.inputSource);
         const grabbedBox = currentlyGrabbedBoxes[handIndex];
@@ -389,6 +510,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         uniforms.baseColorFactor.value = [Math.random(), Math.random(), Math.random(), 1.0];
       }
 
+      // Moves grabbed boxes to a stable point along each active target ray.
       function updateGrabbedBoxes(frame, refSpace) {
         for (let inputSource of frame.session.inputSources) {
           const targetRayPose = frame.getPose(inputSource.targetRaySpace, refSpace);
@@ -417,6 +539,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }
       }
 
+      // Updates box transforms, optionally mirroring state from the color scene to the motion scene.
       function updateBoxMatrices(targetBoxes, time, sourceBoxes = targetBoxes) {
         for (let i = 0; i < targetBoxes.length; ++i) {
           const sourceBox = sourceBoxes[i];
@@ -433,6 +556,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }
       }
 
+      // Converts framebuffer status enums into readable diagnostics.
       function getFramebufferStatusName(status) {
         switch (status) {
           case gl.FRAMEBUFFER_COMPLETE:
@@ -452,6 +576,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }
       }
 
+      // Checks the currently bound draw framebuffer and logs a useful label on failure.
       function checkDrawFramebuffer(label) {
         const status = gl.checkFramebufferStatus(gl.DRAW_FRAMEBUFFER);
         if (status == gl.FRAMEBUFFER_COMPLETE) {
@@ -462,6 +587,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         return false;
       }
 
+      // Allocates the multiview color-pass depth texture used only for direct color rendering.
       function ensureColorDepthTexture(width, height, viewCount) {
         if (colorDepthTexture &&
             colorDepthTextureWidth == width &&
@@ -495,63 +621,357 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         return colorDepthTexture;
       }
 
+      // Allocates and attaches the non-multiview MSAA color/depth renderbuffers.
+      function ensureColorMsaaFramebuffer(width, height) {
+        const samples = Math.min(spaceWarpCapabilities.msaaSamples, renderer.maxSamples);
+        if (samples <= 0) {
+          return null;
+        }
+
+        if (!colorMsaaFramebuffer) {
+          colorMsaaFramebuffer = gl.createFramebuffer();
+        }
+        if (!colorMsaaColorRenderbuffer ||
+            !colorMsaaDepthRenderbuffer ||
+            colorMsaaWidth != width ||
+            colorMsaaHeight != height ||
+            colorMsaaSamples != samples) {
+          if (colorMsaaColorRenderbuffer) {
+            gl.deleteRenderbuffer(colorMsaaColorRenderbuffer);
+          }
+          if (colorMsaaDepthRenderbuffer) {
+            gl.deleteRenderbuffer(colorMsaaDepthRenderbuffer);
+          }
+
+          colorMsaaColorRenderbuffer = gl.createRenderbuffer();
+          colorMsaaDepthRenderbuffer = gl.createRenderbuffer();
+          colorMsaaWidth = width;
+          colorMsaaHeight = height;
+          colorMsaaSamples = samples;
+
+          gl.bindRenderbuffer(gl.RENDERBUFFER, colorMsaaColorRenderbuffer);
+          gl.renderbufferStorageMultisample(
+              gl.RENDERBUFFER,
+              colorMsaaSamples,
+              gl.RGBA8,
+              colorMsaaWidth,
+              colorMsaaHeight);
+
+          gl.bindRenderbuffer(gl.RENDERBUFFER, colorMsaaDepthRenderbuffer);
+          gl.renderbufferStorageMultisample(
+              gl.RENDERBUFFER,
+              colorMsaaSamples,
+              gl.DEPTH_COMPONENT24,
+              colorMsaaWidth,
+              colorMsaaHeight);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, colorMsaaFramebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        gl.framebufferRenderbuffer(
+            gl.FRAMEBUFFER,
+            gl.COLOR_ATTACHMENT0,
+            gl.RENDERBUFFER,
+            colorMsaaColorRenderbuffer);
+        gl.framebufferRenderbuffer(
+            gl.FRAMEBUFFER,
+            gl.DEPTH_ATTACHMENT,
+            gl.RENDERBUFFER,
+            colorMsaaDepthRenderbuffer);
+
+        return colorMsaaFramebuffer;
+      }
+
+      // Allocates the single-sample app-owned depth buffer for direct non-multiview color rendering.
+      function ensureColorDepthRenderbuffer(width, height) {
+        if (colorDepthRenderbuffer &&
+            colorDepthRenderbufferWidth == width &&
+            colorDepthRenderbufferHeight == height) {
+          return colorDepthRenderbuffer;
+        }
+
+        if (colorDepthRenderbuffer) {
+          gl.deleteRenderbuffer(colorDepthRenderbuffer);
+        }
+
+        colorDepthRenderbuffer = gl.createRenderbuffer();
+        colorDepthRenderbufferWidth = width;
+        colorDepthRenderbufferHeight = height;
+
+        gl.bindRenderbuffer(gl.RENDERBUFFER, colorDepthRenderbuffer);
+        gl.renderbufferStorage(
+            gl.RENDERBUFFER,
+            gl.DEPTH_COMPONENT24,
+            colorDepthRenderbufferWidth,
+            colorDepthRenderbufferHeight);
+
+        return colorDepthRenderbuffer;
+      }
+
+      // Drops app-owned color-pass buffers when a new immersive session is configured.
+      function resetColorTargets() {
+        if (colorMsaaColorRenderbuffer) {
+          gl.deleteRenderbuffer(colorMsaaColorRenderbuffer);
+        }
+        if (colorMsaaDepthRenderbuffer) {
+          gl.deleteRenderbuffer(colorMsaaDepthRenderbuffer);
+        }
+        if (colorDepthRenderbuffer) {
+          gl.deleteRenderbuffer(colorDepthRenderbuffer);
+        }
+
+        colorMsaaColorRenderbuffer = null;
+        colorMsaaDepthRenderbuffer = null;
+        colorMsaaWidth = 0;
+        colorMsaaHeight = 0;
+        colorMsaaSamples = 0;
+        colorDepthRenderbuffer = null;
+        colorDepthRenderbufferWidth = 0;
+        colorDepthRenderbufferHeight = 0;
+      }
+
+      // Attaches a texture array to the current draw framebuffer using the multiview extension.
+      function attachMultiviewTexture(attachment, texture, viewCount, msaa) {
+        if (msaa) {
+          multiviewExtension.framebufferTextureMultisampleMultiviewOVR(
+              gl.DRAW_FRAMEBUFFER,
+              attachment,
+              texture,
+              0,
+              renderer.maxSamples,
+              0,
+              viewCount);
+        } else {
+          multiviewExtension.framebufferTextureMultiviewOVR(
+              gl.DRAW_FRAMEBUFFER,
+              attachment,
+              texture,
+              0,
+              0,
+              viewCount);
+        }
+      }
+
+      // Returns the depth/motion viewport, which may differ from the color viewport.
+      function getDepthStencilViewport(glLayer) {
+        return {
+          x: 0,
+          y: 0,
+          width: glLayer.depthStencilTextureWidth || glLayer.viewport.width,
+          height: glLayer.depthStencilTextureHeight || glLayer.viewport.height
+        };
+      }
+
+      // Returns the full color texture size used for non-multiview direct layer attachment.
+      function getColorTextureSize(glLayer) {
+        return {
+          width: glLayer.colorTextureWidth ||
+              glLayer.viewport.x + glLayer.viewport.width,
+          height: glLayer.colorTextureHeight ||
+              glLayer.viewport.y + glLayer.viewport.height
+        };
+      }
+
+      // Invalidates app-owned color-pass depth and optionally detaches it before resolving or handing off.
+      function discardFramebufferDepth(framebuffer, detachDepth = false) {
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, framebuffer);
+        gl.invalidateFramebuffer(gl.DRAW_FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
+        if (detachDepth) {
+          gl.framebufferRenderbuffer(
+              gl.DRAW_FRAMEBUFFER,
+              gl.DEPTH_ATTACHMENT,
+              gl.RENDERBUFFER,
+              null);
+        }
+      }
+
+      // Resolves the non-multiview MSAA color buffer directly into one XR texture-array layer.
+      function resolveColorMsaaToTextureLayer(colorTexture, layerIndex, size) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, colorMsaaFramebuffer);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, colorFramebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        gl.framebufferTextureLayer(
+            gl.DRAW_FRAMEBUFFER,
+            gl.COLOR_ATTACHMENT0,
+            colorTexture,
+            0,
+            layerIndex);
+        gl.framebufferRenderbuffer(
+            gl.DRAW_FRAMEBUFFER,
+            gl.DEPTH_ATTACHMENT,
+            gl.RENDERBUFFER,
+            null);
+        if (!checkDrawFramebuffer('color resolve')) {
+          return;
+        }
+        gl.blitFramebuffer(
+            0,
+            0,
+            size.width,
+            size.height,
+            0,
+            0,
+            size.width,
+            size.height,
+            gl.COLOR_BUFFER_BIT,
+            gl.NEAREST);
+      }
+
+      // Binds the color-pass framebuffer for multiview, MSAA, or direct non-multiview rendering.
+      function bindColorRenderTarget(
+          glLayer,
+          viewCount,
+          colorSize,
+          multiview,
+          layerIndex) {
+        if (multiview) {
+          const depthTexture = ensureColorDepthTexture(
+              colorSize.width,
+              colorSize.height,
+              viewCount);
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, colorFramebuffer);
+          attachMultiviewTexture(
+              gl.COLOR_ATTACHMENT0,
+              glLayer.colorTexture,
+              viewCount,
+              renderer.multisampledMultiview);
+          attachMultiviewTexture(
+              gl.DEPTH_ATTACHMENT,
+              depthTexture,
+              viewCount,
+              renderer.multisampledMultiview);
+          return true;
+        }
+
+        if (colorPassUsesMsaa) {
+          const targetFramebuffer =
+              ensureColorMsaaFramebuffer(colorSize.width, colorSize.height);
+          if (!targetFramebuffer) {
+            return false;
+          }
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer);
+          return true;
+        }
+
+        const depthRenderbuffer =
+            ensureColorDepthRenderbuffer(colorSize.width, colorSize.height);
+        if (!colorFramebuffer || !depthRenderbuffer) {
+          return false;
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, colorFramebuffer);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        gl.framebufferTextureLayer(
+            gl.FRAMEBUFFER,
+            gl.COLOR_ATTACHMENT0,
+            glLayer.colorTexture,
+            0,
+            layerIndex);
+        gl.framebufferRenderbuffer(
+            gl.FRAMEBUFFER,
+            gl.DEPTH_ATTACHMENT,
+            gl.RENDERBUFFER,
+            depthRenderbuffer);
+        return true;
+      }
+
+      // Finishes a non-multiview color pass by discarding depth and resolving MSAA when needed.
+      function finishColorPass(glLayer, layerIndex, colorSize) {
+        if (colorPassUsesMsaa) {
+          discardFramebufferDepth(colorMsaaFramebuffer, true);
+          resolveColorMsaaToTextureLayer(
+              glLayer.colorTexture,
+              layerIndex,
+              colorSize);
+        } else {
+          discardFramebufferDepth(colorFramebuffer, true);
+        }
+      }
+
+      // Renders the color pass without writing the Space Warp depthStencilTexture.
       function renderColorAndDepth(session, pose) {
-        if (!pose || !renderer || !renderer.multiview) {
+        if (!pose || !renderer) {
           return;
         }
 
         const layer = session.renderState.layers[0];
+        const multiview = !!renderer.multiview;
         const views = [];
 
         for (let i = 0; i < pose.views.length; ++i) {
           const view = pose.views[i];
           const glLayer = xrGLFactory.getViewSubImage(layer, view);
 
-          if (i == 0) {
-            const viewport = glLayer.viewport;
-            const depthTexture = ensureColorDepthTexture(
-                viewport.width,
-                viewport.height,
-                pose.views.length);
+          const viewport = glLayer.viewport;
+          const colorSize = getColorTextureSize(glLayer);
+          const layerIndex = glLayer.imageIndex ?? i;
 
-            gl.bindFramebuffer(gl.FRAMEBUFFER, xrColorFramebuffer);
-            multiviewExtension.framebufferTextureMultiviewOVR(
-                gl.DRAW_FRAMEBUFFER,
-                gl.COLOR_ATTACHMENT0,
-                glLayer.colorTexture,
-                0,
-                0,
-                pose.views.length);
-            multiviewExtension.framebufferTextureMultiviewOVR(
-                gl.DRAW_FRAMEBUFFER,
-                gl.DEPTH_ATTACHMENT,
-                depthTexture,
-                0,
-                0,
-                pose.views.length);
-
-            if (!checkDrawFramebuffer('color')) {
-              return;
-            }
-
-            gl.disable(gl.SCISSOR_TEST);
-            gl.viewport(0, 0, viewport.width, viewport.height);
-            gl.clearColor(0.1, 0.2, 0.3, 1.0);
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          // Multiview attaches the texture array once and draws both eyes in one
+          // renderer call, so only the first view performs framebuffer setup.
+          if (multiview && i != 0) {
+            views.push(new WebXRView(view, glLayer, viewport));
+            continue;
           }
 
-          views.push(new WebXRView(view, glLayer, glLayer.viewport));
+          // Non-multiview binds one texture-array layer per eye. MSAA uses an
+          // app-owned multisample buffer first; non-MSAA renders to the layer directly.
+          if (!bindColorRenderTarget(
+              glLayer,
+              pose.views.length,
+              colorSize,
+              multiview,
+              layerIndex)) {
+            return;
+          }
+
+          if (!checkDrawFramebuffer('color')) {
+            return;
+          }
+
+          gl.disable(gl.SCISSOR_TEST);
+          gl.viewport(
+              viewport.x,
+              viewport.y,
+              viewport.width,
+              viewport.height);
+          gl.clearColor(0.1, 0.2, 0.3, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+          const renderView = new WebXRView(view, glLayer, viewport);
+          if (multiview) {
+            // Defer drawing until both views are collected for the multiview renderer.
+            views.push(renderView);
+          } else {
+            scene.drawViewArray([renderView]);
+            // The color pass depth is app-owned. Discard it before the Space Warp
+            // depthStencilTexture is rendered by renderMotionAndDepth().
+            finishColorPass(
+                glLayer,
+                layerIndex,
+                colorSize);
+          }
         }
 
-        scene.drawViewArray(views);
+        if (multiview) {
+          scene.drawViewArray(views);
+          // This depth texture is only for the color pass and must not be used
+          // as the projection layer's Space Warp depthStencilTexture.
+          discardFramebufferDepth(colorFramebuffer);
+        }
       }
 
+      // Renders motion vectors and the Space Warp depthStencilTexture after the color pass.
       function renderMotionAndDepth(session, pose) {
-        if (!pose || !motionRenderer || !motionRenderer.multiview) {
+        if (!pose || !motionRenderer) {
           return;
         }
 
         const layer = session.renderState.layers[0];
+        const multiview = !!motionRenderer.multiview;
+        const frameId = motionRenderer._frameId;
         const motionViews = [];
 
         for (let i = 0; i < pose.views.length; ++i) {
@@ -561,13 +981,21 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             return;
           }
 
-          if (i == 0) {
-            const motionWidth =
-                glLayer.motionVectorTextureWidth || glLayer.viewport.width;
-            const motionHeight =
-                glLayer.motionVectorTextureHeight || glLayer.viewport.height;
+          const motionViewport = getDepthStencilViewport(glLayer);
 
-            gl.bindFramebuffer(gl.FRAMEBUFFER, xrMotionFramebuffer);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, xrMotionFramebuffer);
+          if (multiview) {
+            if (i != 0) {
+              const motionView = new WebXRView(view, glLayer, motionViewport);
+              const previous = previousMatrices[i];
+              motionView.previousProjectionMatrix =
+                  previous ? previous.projectionMatrix : motionView.projectionMatrix;
+              motionView.previousViewMatrix =
+                  previous ? previous.viewMatrix : motionView.viewMatrix;
+              motionViews.push(motionView);
+              continue;
+            }
+
             multiviewExtension.framebufferTextureMultiviewOVR(
                 gl.DRAW_FRAMEBUFFER,
                 gl.COLOR_ATTACHMENT0,
@@ -582,31 +1010,57 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
                 0,
                 0,
                 pose.views.length);
-
-            gl.viewport(0, 0, motionWidth, motionHeight);
-            gl.disable(gl.SCISSOR_TEST);
-            gl.clearColor(0.0, 0.0, 0.0, 0.0);
-
-            if (!checkDrawFramebuffer('motion')) {
-              return;
-            }
-
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          } else {
+            const layerIndex = glLayer.imageIndex ?? i;
+            gl.framebufferTextureLayer(
+                gl.DRAW_FRAMEBUFFER,
+                gl.COLOR_ATTACHMENT0,
+                glLayer.motionVectorTexture,
+                0,
+                layerIndex);
+            gl.framebufferTextureLayer(
+                gl.DRAW_FRAMEBUFFER,
+                gl.DEPTH_ATTACHMENT,
+                glLayer.depthStencilTexture,
+                0,
+                layerIndex);
           }
 
-          const motionViewport = {
-            x: 0,
-            y: 0,
-            width: glLayer.motionVectorTextureWidth || glLayer.viewport.width,
-            height: glLayer.motionVectorTextureHeight || glLayer.viewport.height
-          };
+          gl.viewport(
+              motionViewport.x,
+              motionViewport.y,
+              motionViewport.width,
+              motionViewport.height);
+          gl.disable(gl.SCISSOR_TEST);
+          gl.clearColor(0.0, 0.0, 0.0, 0.0);
+
+          if (!checkDrawFramebuffer('motion')) {
+            return;
+          }
+
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
           const motionView = new WebXRView(view, glLayer, motionViewport);
           const previous = previousMatrices[i];
           motionView.previousProjectionMatrix =
               previous ? previous.projectionMatrix : motionView.projectionMatrix;
           motionView.previousViewMatrix =
               previous ? previous.viewMatrix : motionView.viewMatrix;
-          motionViews.push(motionView);
+          if (multiview) {
+            motionViews.push(motionView);
+          } else {
+            motionRenderer._frameId = frameId;
+            motionScene.drawViewArray([motionView]);
+            previousMatrices[i] = {
+              projectionMatrix: mat4.clone(motionView.projectionMatrix),
+              viewMatrix: mat4.clone(motionView.viewMatrix)
+            };
+          }
+        }
+
+        if (!multiview) {
+          motionRenderer._frameId = frameId + 1;
+          return;
         }
 
         motionScene.drawViewArray(motionViews);
@@ -619,6 +1073,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }
       }
 
+      // Advances interaction state and renders one inline or immersive XR frame.
       function onXRFrame(t, frame) {
         let session = frame.session;
         let refSpace = session.isImmersive ?
