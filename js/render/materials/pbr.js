@@ -241,6 +241,12 @@ export class PbrMaterial extends Material {
     return FRAGMENT_SOURCE;
   }
 
+  // PBR meshes use regular vec3 POSITION transforms, so the motion pass can
+  // skip vertex_main() and avoid computing color-pass-only varyings.
+  get positionOnlyMotionVector() {
+    return true;
+  }
+
   getProgramDefines(renderPrimitive) {
     let programDefines = {};
 
