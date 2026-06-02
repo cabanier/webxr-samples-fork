@@ -60,10 +60,11 @@ void main() {
 const VERTEX_SHADER_MULTI_ENTRY = `
 uniform mat4 LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX;
 void main() {
-  gl_Position = vertex_main(
-    (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX,
-    (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX,
-    MODEL_MATRIX);
+  mat4 projectionMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX;
+  mat4 viewMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX;
+  gl_Position = vertex_main(projectionMatrix, viewMatrix, MODEL_MATRIX);
 }
 `;
 
@@ -80,6 +81,26 @@ void main() {
 }
 `;
 
+// Fast motion-vector path for mesh materials whose position can be computed
+// directly from POSITION. This skips material vertex_main() work such as
+// normals, lighting varyings, UV setup, and other color-pass-only data.
+const VERTEX_SHADER_POSITION_MOTION_ENTRY = `
+uniform mat4 PROJECTION_MATRIX, VIEW_MATRIX, MODEL_MATRIX;
+uniform mat4 PREV_PROJECTION_MATRIX, PREV_VIEW_MATRIX, PREV_MODEL_MATRIX;
+out highp vec4 vMotionClipPosition;
+out highp vec4 vMotionPrevClipPosition;
+
+void main() {
+  vec4 position = vec4(POSITION, 1.0);
+  vec4 modelPosition = MODEL_MATRIX * position;
+  vec4 prevModelPosition = PREV_MODEL_MATRIX * position;
+  vMotionClipPosition = PROJECTION_MATRIX * (VIEW_MATRIX * modelPosition);
+  vMotionPrevClipPosition =
+      PREV_PROJECTION_MATRIX * (PREV_VIEW_MATRIX * prevModelPosition);
+  gl_Position = vMotionClipPosition;
+}
+`;
+
 const VERTEX_SHADER_MOTION_MULTI_ENTRY = `
 uniform mat4 LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX;
 uniform mat4 PREV_LEFT_PROJECTION_MATRIX, PREV_LEFT_VIEW_MATRIX, PREV_RIGHT_PROJECTION_MATRIX, PREV_RIGHT_VIEW_MATRIX, PREV_MODEL_MATRIX;
@@ -87,13 +108,47 @@ out highp vec4 vMotionClipPosition;
 out highp vec4 vMotionPrevClipPosition;
 
 void main() {
-  if (gl_ViewID_OVR == 0u) {
-    vMotionClipPosition = vertex_main(LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, MODEL_MATRIX);
-    vMotionPrevClipPosition = vertex_main(PREV_LEFT_PROJECTION_MATRIX, PREV_LEFT_VIEW_MATRIX, PREV_MODEL_MATRIX);
-  } else {
-    vMotionClipPosition = vertex_main(RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX);
-    vMotionPrevClipPosition = vertex_main(PREV_RIGHT_PROJECTION_MATRIX, PREV_RIGHT_VIEW_MATRIX, PREV_MODEL_MATRIX);
-  }
+  mat4 projectionMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX;
+  mat4 viewMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX;
+  mat4 prevProjectionMatrix =
+      (gl_ViewID_OVR == 0u) ? PREV_LEFT_PROJECTION_MATRIX : PREV_RIGHT_PROJECTION_MATRIX;
+  mat4 prevViewMatrix =
+      (gl_ViewID_OVR == 0u) ? PREV_LEFT_VIEW_MATRIX : PREV_RIGHT_VIEW_MATRIX;
+
+  vMotionClipPosition = vertex_main(projectionMatrix, viewMatrix, MODEL_MATRIX);
+  vMotionPrevClipPosition =
+      vertex_main(prevProjectionMatrix, prevViewMatrix, PREV_MODEL_MATRIX);
+  gl_Position = vMotionClipPosition;
+}
+`;
+
+// Multiview variant of the position-only motion path. It still computes both
+// current and previous clip positions, but avoids running vertex_main() twice
+// per vertex for each view.
+const VERTEX_SHADER_POSITION_MOTION_MULTI_ENTRY = `
+uniform mat4 LEFT_PROJECTION_MATRIX, LEFT_VIEW_MATRIX, RIGHT_PROJECTION_MATRIX, RIGHT_VIEW_MATRIX, MODEL_MATRIX;
+uniform mat4 PREV_LEFT_PROJECTION_MATRIX, PREV_LEFT_VIEW_MATRIX, PREV_RIGHT_PROJECTION_MATRIX, PREV_RIGHT_VIEW_MATRIX, PREV_MODEL_MATRIX;
+out highp vec4 vMotionClipPosition;
+out highp vec4 vMotionPrevClipPosition;
+
+void main() {
+  vec4 position = vec4(POSITION, 1.0);
+  vec4 modelPosition = MODEL_MATRIX * position;
+  vec4 prevModelPosition = PREV_MODEL_MATRIX * position;
+  mat4 projectionMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX;
+  mat4 viewMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX;
+  mat4 prevProjectionMatrix =
+      (gl_ViewID_OVR == 0u) ? PREV_LEFT_PROJECTION_MATRIX : PREV_RIGHT_PROJECTION_MATRIX;
+  mat4 prevViewMatrix =
+      (gl_ViewID_OVR == 0u) ? PREV_LEFT_VIEW_MATRIX : PREV_RIGHT_VIEW_MATRIX;
+
+  vMotionClipPosition = projectionMatrix * (viewMatrix * modelPosition);
+  vMotionPrevClipPosition =
+      prevProjectionMatrix * (prevViewMatrix * prevModelPosition);
   gl_Position = vMotionClipPosition;
 }
 `;
@@ -137,11 +192,12 @@ const mat4 identity = mat4(
   0, 0, 0, 1);
 
 void main() {
+  mat4 projectionMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX;
+  mat4 viewMatrix =
+      (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX;
   vWorldPosition = vertex_main(identity, identity, MODEL_MATRIX);
-  gl_Position = vertex_main(
-    (gl_ViewID_OVR == 0u) ? LEFT_PROJECTION_MATRIX : RIGHT_PROJECTION_MATRIX,
-    (gl_ViewID_OVR == 0u) ? LEFT_VIEW_MATRIX : RIGHT_VIEW_MATRIX,
-    MODEL_MATRIX);
+  gl_Position = vertex_main(projectionMatrix, viewMatrix, MODEL_MATRIX);
 }
 `;
 
@@ -766,7 +822,9 @@ export class Renderer {
     this._globalLightColor = vec3.clone(DEF_LIGHT_COLOR);
     this._globalLightDir = vec3.clone(DEF_LIGHT_DIR);
 
-    this._mv_ext = gl.getExtension('OVR_multiview2');
+    this._mv_ext =
+        gl.getExtension('OCULUS_multiview') ||
+        gl.getExtension('OVR_multiview2');
 
     this._multiview = options.multiview && this._mv_ext;
     this._multisampledMultiview = options.multisampledMultiview;
@@ -1230,6 +1288,15 @@ export class Renderer {
     }
 
     let defines = material.getProgramDefines(renderPrimitive);
+    // Only opt-in materials can use the position-only motion path. Some
+    // materials, such as billboards, use vertex_main() for custom positioning
+    // or declare POSITION with a non-vec3 type.
+    let positionOnlyMotionVector =
+        this._motionVectorPass && material.positionOnlyMotionVector;
+    if (positionOnlyMotionVector) {
+      // Keep the optimized and generic motion programs in separate cache slots.
+      defines['POSITION_ONLY_MOTION_VECTOR'] = 1;
+    }
     let key = this._getProgramKey(materialName, defines);
 
     let extensions = [];
@@ -1244,7 +1311,17 @@ export class Renderer {
     } else {
       let fullVertexSource = vertexSource;
       if (this._motionVectorPass) {
-        fullVertexSource += this.multiview ? VERTEX_SHADER_MOTION_MULTI_ENTRY : VERTEX_SHADER_MOTION_ENTRY;
+        if (positionOnlyMotionVector) {
+          // Motion vectors only need current and previous clip-space positions;
+          // opted-in mesh materials can skip their full color-pass vertex work.
+          fullVertexSource += this.multiview ?
+              VERTEX_SHADER_POSITION_MOTION_MULTI_ENTRY :
+              VERTEX_SHADER_POSITION_MOTION_ENTRY;
+        } else {
+          fullVertexSource += this.multiview ?
+              VERTEX_SHADER_MOTION_MULTI_ENTRY :
+              VERTEX_SHADER_MOTION_ENTRY;
+        }
       } else if (this._useDepth) {
         fullVertexSource += this.multiview ? VERTEX_SHADER_MULTI_DEPTH_ENTRY : VERTEX_SHADER_DEPTH_ENTRY;
       } else {
