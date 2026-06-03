@@ -48,8 +48,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         <label><input type="checkbox" id="do_antialias" disabled>MSAA</label>
         <div>
           <label for="shape_count">shapes <output id="shape_count_value" for="shape_count">9</output></label><br>
-          <input type="range" id="shape_count" min="4" max="19" value="9">
+          <input type="range" id="shape_count" min="4" max="20" value="9">
         </div>
+        <button type="button" id="benchmark_button" disabled>benchmark</button>
+        <p id="benchmark_status"></p>
       </details>
     </header>
     <script type="module">
@@ -78,6 +80,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       let doAntialias = document.getElementById('do_antialias');
       let shapeCountControl = document.getElementById('shape_count');
       let shapeCountValue = document.getElementById('shape_count_value');
+      let benchmarkButton = document.getElementById('benchmark_button');
+      let benchmarkStatus = document.getElementById('benchmark_status');
       let xrButton = null;
       let xrImmersiveRefSpace = null;
       let inlineViewerHelper = null;
@@ -127,7 +131,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       const previousMatrices = {};
       const MIN_SHAPE_COUNT = 4;
       const DEFAULT_SHAPE_COUNT = 9;
-      const MAX_SHAPE_COUNT = 19;
+      const MAX_SHAPE_COUNT = 20;
+      const BENCHMARK_WARMUP_MS = 5000;
+      const BENCHMARK_MEASURE_MS = 10000;
+      const BENCHMARK_KEEPUP_RATIO = 0.95;
+      const BENCHMARK_FIXED_VIEW_MATRIX = mat4.create();
+      const BENCHMARK_FIXED_PROJECTION_MATRIX = mat4.create();
       const SHAPE_DEFINITIONS = [
         {primitive: 0, position: [-1.1, 1.45, -1.2], color: [1.0, 0.0, 0.0]},
         {primitive: 1, position: [0.0, 1.45, -1.2], color: [0.0, 1.0, 0.0]},
@@ -148,7 +157,22 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         {primitive: 7, position: [-1.35, 2.45, -2.75], color: [0.25, 0.55, 1.0]},
         {primitive: 8, position: [0.0, 2.55, -2.85], color: [1.0, 0.55, 0.25]},
         {primitive: 0, position: [1.35, 2.45, -2.75], color: [0.65, 1.0, 0.25]},
+        {primitive: 1, position: [0.0, 1.85, -2.75], color: [1.0, 0.95, 0.2]},
       ];
+      let benchmarkState = null;
+
+      mat4.translate(
+          BENCHMARK_FIXED_VIEW_MATRIX,
+          BENCHMARK_FIXED_VIEW_MATRIX,
+          [0, -1.85, 0]);
+      mat4.ortho(
+          BENCHMARK_FIXED_PROJECTION_MATRIX,
+          -2.6,
+          2.6,
+          -1.9,
+          1.9,
+          0.05,
+          8.0);
 
       // Reads and clamps the live stress-shape count from the slider.
       function getShapeCount() {
@@ -157,6 +181,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           return DEFAULT_SHAPE_COUNT;
         }
         return Math.min(MAX_SHAPE_COUNT, Math.max(MIN_SHAPE_COUNT, count));
+      }
+
+      function setShapeCount(count) {
+        shapeCountControl.value = Math.min(MAX_SHAPE_COUNT, Math.max(MIN_SHAPE_COUNT, count));
+        syncShapeCount();
       }
 
       // Shows or hides prebuilt shape slots without rebuilding their heavy geometry.
@@ -198,6 +227,173 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             currentlyGrabbedShapes[i] = null;
           }
         }
+      }
+
+      // Uses XRSession.frameRate when available so the benchmark target matches the device mode.
+      function getBenchmarkBaseFrameRate(session) {
+        if (Number.isFinite(session.frameRate) && session.frameRate > 0) {
+          return session.frameRate;
+        }
+
+        return 90;
+      }
+
+      // Starts a 10-second sampling window for the current active shape count.
+      function startBenchmarkMeasurement(timestamp) {
+        benchmarkState.phase = 'measure';
+        benchmarkState.measureStart = timestamp;
+        benchmarkState.frameCount = 0;
+        benchmarkStatus.textContent =
+            `Benchmark: measuring ${benchmarkState.shapeCount} shapes.`;
+      }
+
+      // During benchmarks, keep the camera deterministic and wide enough to include all shape slots.
+      function isBenchmarkSession(session) {
+        return !!benchmarkState &&
+            benchmarkState.session === session &&
+            session.isImmersive;
+      }
+
+      function createRenderView(session, view, glLayer, viewport) {
+        const renderView = new WebXRView(view, glLayer, viewport);
+        if (isBenchmarkSession(session)) {
+          renderView.projectionMatrix = BENCHMARK_FIXED_PROJECTION_MATRIX;
+          renderView._viewMatrix = BENCHMARK_FIXED_VIEW_MATRIX;
+        }
+        return renderView;
+      }
+
+      // Stores the visible result and exits immersive XR.
+      function finishBenchmark(session, message, resultShapeCount) {
+        if (resultShapeCount !== null) {
+          setShapeCount(resultShapeCount);
+        }
+
+        benchmarkStatus.textContent = message;
+        benchmarkState.finished = true;
+        session.end().catch((err) => {
+          benchmarkStatus.textContent =
+              `${message} Failed to exit XR: ${err.message}`;
+        });
+      }
+
+      // Compares the completed sampling window against the current benchmark target.
+      function evaluateBenchmarkWindow(session, timestamp) {
+        const elapsedMs = timestamp - benchmarkState.measureStart;
+        const measuredFps = benchmarkState.frameCount * 1000.0 / elapsedMs;
+        const requiredFps = benchmarkState.requiredFps;
+
+        if (measuredFps >= requiredFps) {
+          benchmarkState.bestShapeCount = benchmarkState.shapeCount;
+          benchmarkState.bestFps = measuredFps;
+
+          if (benchmarkState.shapeCount >= MAX_SHAPE_COUNT) {
+            finishBenchmark(
+                session,
+                `Benchmark result: ${benchmarkState.bestShapeCount} shapes held ` +
+                    `${measuredFps.toFixed(1)} fps.`,
+                benchmarkState.bestShapeCount);
+            return;
+          }
+
+          benchmarkState.shapeCount++;
+          setShapeCount(benchmarkState.shapeCount);
+          startBenchmarkMeasurement(timestamp);
+          return;
+        }
+
+        if (benchmarkState.bestShapeCount === null) {
+          finishBenchmark(
+              session,
+              `Benchmark result: fewer than ${MIN_SHAPE_COUNT} shapes held ` +
+                  `${requiredFps.toFixed(1)} fps.`,
+              MIN_SHAPE_COUNT);
+          return;
+        }
+
+        finishBenchmark(
+            session,
+            `Benchmark result: ${benchmarkState.bestShapeCount} shapes held ` +
+                `${benchmarkState.bestFps.toFixed(1)} fps. ` +
+                `${benchmarkState.shapeCount} shapes measured ` +
+                `${measuredFps.toFixed(1)} fps.`,
+            benchmarkState.bestShapeCount);
+      }
+
+      // Advances the warm-up and measurement phases once per immersive XR frame.
+      function updateBenchmark(timestamp, session) {
+        if (!benchmarkState ||
+            benchmarkState.session !== session ||
+            benchmarkState.finished ||
+            !session.isImmersive) {
+          return;
+        }
+
+        if (!benchmarkState.targetFps) {
+          benchmarkState.baseFps = getBenchmarkBaseFrameRate(session);
+          benchmarkState.targetFps =
+              benchmarkState.spaceWarpEnabled ?
+                benchmarkState.baseFps * 0.5 :
+                benchmarkState.baseFps;
+          benchmarkState.requiredFps =
+              benchmarkState.targetFps * BENCHMARK_KEEPUP_RATIO;
+          benchmarkState.warmupStart = timestamp;
+          benchmarkState.phase = 'warmup';
+          benchmarkStatus.textContent =
+              `Benchmark: warming up ${benchmarkState.shapeCount} shapes.`;
+          return;
+        }
+
+        if (benchmarkState.phase == 'warmup') {
+          if (timestamp - benchmarkState.warmupStart >= BENCHMARK_WARMUP_MS) {
+            startBenchmarkMeasurement(timestamp);
+          }
+          return;
+        }
+
+        if (benchmarkState.phase != 'measure') {
+          return;
+        }
+
+        benchmarkState.frameCount++;
+        if (timestamp - benchmarkState.measureStart >= BENCHMARK_MEASURE_MS) {
+          evaluateBenchmarkWindow(session, timestamp);
+        }
+      }
+
+      // Enters immersive XR with the current options and starts the benchmark at four shapes.
+      function startBenchmark() {
+        if (benchmarkState || (xrButton && xrButton.session)) {
+          return;
+        }
+
+        setShapeCount(MIN_SHAPE_COUNT);
+        currentlySelectedShapes = [null, null];
+        currentlyGrabbedShapes = [null, null];
+        benchmarkState = {
+          session: null,
+          phase: 'requesting',
+          shapeCount: MIN_SHAPE_COUNT,
+          bestShapeCount: null,
+          bestFps: 0,
+          baseFps: 0,
+          targetFps: 0,
+          requiredFps: 0,
+          warmupStart: 0,
+          measureStart: 0,
+          frameCount: 0,
+          spaceWarpEnabled: useSpaceWarp.checked,
+          finished: false,
+        };
+        benchmarkStatus.textContent = 'Benchmark: starting XR session.';
+        updateFeatureControls();
+
+        onRequestSession().catch((err) => {
+          benchmarkStatus.textContent =
+              `Benchmark failed to start: ${err.message}`;
+          benchmarkState = null;
+          updateFeatureControls();
+        });
       }
 
       // PBR-compatible material with deliberately expensive procedural fragment work.
@@ -827,15 +1023,20 @@ vec4 fragment_main() {
               'Space Warp disabled; projection-layer color path only.';
 
         if (xrButton) {
-          xrButton.enabled =
+          const canEnter =
               immersiveVrSupported &&
               (!requestSpaceWarp || spaceWarpCapabilities.compatible);
+          shapeCountControl.disabled = !!benchmarkState;
+          xrButton.enabled = canEnter && (!benchmarkState || !!xrButton.session);
+          benchmarkButton.disabled =
+              !canEnter || !!benchmarkState || !!xrButton.session;
         }
       }
 
       useSpaceWarp.addEventListener('change', updateFeatureControls);
       useMultiview.addEventListener('change', updateFeatureControls);
       shapeCountControl.addEventListener('input', syncShapeCount);
+      benchmarkButton.addEventListener('click', startBenchmark);
       syncShapeCount();
 
       // Creates the shared WebGL2 context and caches extension support.
@@ -882,6 +1083,9 @@ vec4 fragment_main() {
           xrButton.setSession(session);
           session.isImmersive = true;
           session.spaceWarpEnabled = requestSpaceWarp;
+          if (benchmarkState) {
+            benchmarkState.session = session;
+          }
           onSessionStarted(session);
         });
       }
@@ -967,6 +1171,13 @@ vec4 fragment_main() {
           session.updateRenderState({baseLayer: glLayer});
         }
 
+        syncShapeCount();
+        if (benchmarkState && session.isImmersive) {
+          benchmarkState.session = session;
+          benchmarkState.spaceWarpEnabled = spaceWarpEnabled;
+          updateFeatureControls();
+        }
+
         let refSpaceType = session.isImmersive ? 'local-floor' : 'viewer';
         session.requestReferenceSpace(refSpaceType).then((refSpace) => {
           if (session.isImmersive) {
@@ -987,6 +1198,8 @@ vec4 fragment_main() {
       // Clears immersive-only state that should not leak into a future session.
       function onSessionEnded(event) {
         if (event.session.isImmersive) {
+          const endedBenchmark =
+              benchmarkState && benchmarkState.session === event.session;
           xrButton.setSession(null);
           spaceWarpEnabled = false;
           motionRenderer = null;
@@ -995,6 +1208,14 @@ vec4 fragment_main() {
           for (let key of Object.keys(previousMatrices)) {
             delete previousMatrices[key];
           }
+
+          if (endedBenchmark) {
+            if (!benchmarkState.finished) {
+              benchmarkStatus.textContent = 'Benchmark cancelled.';
+            }
+            benchmarkState = null;
+          }
+          updateFeatureControls();
         }
       }
 
@@ -1666,7 +1887,7 @@ void main() {
           // Multiview attaches the texture array once and draws both eyes in one
           // renderer call, so only the first view performs framebuffer setup.
           if (multiview && i != 0) {
-            views.push(new WebXRView(view, glLayer, viewport));
+            views.push(createRenderView(session, view, glLayer, viewport));
             continue;
           }
 
@@ -1694,7 +1915,7 @@ void main() {
           gl.clearColor(0.1, 0.2, 0.3, 1.0);
           gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-          const renderView = new WebXRView(view, glLayer, viewport);
+          const renderView = createRenderView(session, view, glLayer, viewport);
           if (multiview) {
             // Defer drawing until both views are collected for the multiview renderer.
             views.push(renderView);
@@ -1740,7 +1961,8 @@ void main() {
           gl.bindFramebuffer(gl.FRAMEBUFFER, xrMotionFramebuffer);
           if (multiview) {
             if (i != 0) {
-              const motionView = new WebXRView(view, glLayer, motionViewport);
+              const motionView =
+                  createRenderView(session, view, glLayer, motionViewport);
               const previous = previousMatrices[i];
               motionView.previousProjectionMatrix =
                   previous ? previous.projectionMatrix : motionView.projectionMatrix;
@@ -1794,7 +2016,8 @@ void main() {
 
           gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-          const motionView = new WebXRView(view, glLayer, motionViewport);
+          const motionView =
+              createRenderView(session, view, glLayer, motionViewport);
           const previous = previousMatrices[i];
           motionView.previousProjectionMatrix =
               previous ? previous.projectionMatrix : motionView.projectionMatrix;
@@ -1834,6 +2057,7 @@ void main() {
                          xrImmersiveRefSpace :
                          inlineViewerHelper.referenceSpace;
         let pose = frame.getViewerPose(refSpace);
+        const benchmarkActive = isBenchmarkSession(session);
 
         scene.startFrame();
         if (session.isImmersive && spaceWarpEnabled) {
@@ -1842,12 +2066,18 @@ void main() {
 
         session.requestAnimationFrame(onXRFrame);
 
-        updateGrabbedShapes(frame, refSpace);
+        if (!benchmarkActive) {
+          updateGrabbedShapes(frame, refSpace);
+        }
         updateShapeMatrices(shapes, t);
-        scene.updateInputSources(frame, refSpace);
+        if (!benchmarkActive) {
+          scene.updateInputSources(frame, refSpace);
+        }
         if (session.isImmersive && spaceWarpEnabled) {
           updateShapeMatrices(motionShapes, t, shapes);
-          motionScene.updateInputSources(frame, refSpace);
+          if (!benchmarkActive) {
+            motionScene.updateInputSources(frame, refSpace);
+          }
         }
 
         gl.clearColor(0.1, 0.2, 0.3, 1.0);
@@ -1864,6 +2094,7 @@ void main() {
         if (session.isImmersive && spaceWarpEnabled) {
           motionScene.endFrame();
         }
+        updateBenchmark(t, session);
       }
 
       // Start the XR application.
