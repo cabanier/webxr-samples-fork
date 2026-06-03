@@ -310,14 +310,19 @@ const MODEL_UNIFORM_SIZE = 64;
 const MATERIAL_UNIFORM_SIZE = 64;
 
 export class GPURenderer {
-  constructor(device, colorFormat) {
+  constructor(device, colorFormat, options = {}) {
+    options = typeof options == 'number' ? {sampleCount: options} : options;
+
     this._device = device;
     this._colorFormat = colorFormat || 'rgba8unorm';
     this._depthFormat = 'depth24plus';
+    this._sampleCount = options.sampleCount > 1 ? 4 : 1;
     this._frameId = 0;
     this._pipelineCache = {};
     this._shaderCache = {};
     this._textureCache = {};
+    this._msaaColorAttachments = [];
+    this._msaaDepthAttachments = [];
     this._renderPrimitives = Array(RENDER_ORDER.DEFAULT);
     this._cameraPositions = [];
 
@@ -345,11 +350,10 @@ export class GPURenderer {
     );
     this._whiteTextureView = this._whiteTexture.createView();
 
-    // Frame uniform buffer (reused each frame).
-    this._frameUniformBuffer = device.createBuffer({
-      size: FRAME_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    // Frame uniforms are double-buffered by view so both eyes can be encoded
+    // into one command buffer without racing on the same uniform contents.
+    this._frameUniforms = [];
+    this._frameData = new Float32Array(FRAME_UNIFORM_SIZE / 4);
 
     // Create the frame bind group layout (group 0).
     this._frameBindGroupLayout = device.createBindGroupLayout({
@@ -382,30 +386,102 @@ export class GPURenderer {
       ],
     });
 
-    // Pool of model uniform buffers.
-    this._modelUniformBuffers = [];
+    // Pool of model uniform buffers and bind groups.
+    this._modelUniforms = [];
     this._modelUniformIndex = 0;
   }
 
   get device() { return this._device; }
   get colorFormat() { return this._colorFormat; }
+  get sampleCount() { return this._sampleCount; }
 
   set globalLightColor(value) { vec3.copy(this._globalLightColor, value); }
   get globalLightColor() { return vec3.clone(this._globalLightColor); }
   set globalLightDir(value) { vec3.copy(this._globalLightDir, value); }
   get globalLightDir() { return vec3.clone(this._globalLightDir); }
 
-  _getModelUniformBuffer() {
-    if (this._modelUniformIndex < this._modelUniformBuffers.length) {
-      return this._modelUniformBuffers[this._modelUniformIndex++];
+  _getFrameUniform(viewIndex) {
+    if (viewIndex < this._frameUniforms.length) {
+      return this._frameUniforms[viewIndex];
     }
-    let buf = this._device.createBuffer({
+
+    let buffer = this._device.createBuffer({
+      size: FRAME_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    let bindGroup = this._device.createBindGroup({
+      layout: this._frameBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: buffer } },
+      ],
+    });
+    let frameUniform = {buffer, bindGroup};
+    this._frameUniforms.push(frameUniform);
+    return frameUniform;
+  }
+
+  _getModelUniform() {
+    if (this._modelUniformIndex < this._modelUniforms.length) {
+      return this._modelUniforms[this._modelUniformIndex++];
+    }
+
+    let buffer = this._device.createBuffer({
       size: MODEL_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    this._modelUniformBuffers.push(buf);
+    let bindGroup = this._device.createBindGroup({
+      layout: this._modelBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: buffer } },
+      ],
+    });
+    let modelUniform = {buffer, bindGroup};
+    this._modelUniforms.push(modelUniform);
     this._modelUniformIndex++;
-    return buf;
+    return modelUniform;
+  }
+
+  _getMsaaAttachment(attachments, viewIndex, width, height, format) {
+    let attachment = attachments[viewIndex];
+    if (attachment &&
+        attachment.width == width &&
+        attachment.height == height &&
+        attachment.format == format &&
+        attachment.sampleCount == this._sampleCount) {
+      return attachment;
+    }
+
+    if (attachment && attachment.texture) {
+      attachment.texture.destroy();
+    }
+
+    let texture = this._device.createTexture({
+      size: [width, height],
+      sampleCount: this._sampleCount,
+      format: format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    attachment = {
+      texture,
+      view: texture.createView(),
+      width,
+      height,
+      format,
+      sampleCount: this._sampleCount,
+    };
+    attachments[viewIndex] = attachment;
+    return attachment;
+  }
+
+  _getViewAttachmentSize(view) {
+    if (!view.viewport) {
+      return null;
+    }
+
+    return {
+      width: Math.max(1, Math.ceil(view.viewport.x + view.viewport.width)),
+      height: Math.max(1, Math.ceil(view.viewport.y + view.viewport.height)),
+    };
   }
 
   updateRenderBuffer(renderBuffer, data, byteOffset) {
@@ -562,7 +638,7 @@ export class GPURenderer {
   }
 
   _getOrCreatePipeline(renderPrimitive, renderMaterial) {
-    let key = `${renderPrimitive._attributeMask}:${renderMaterial._state}:${renderMaterial._materialName}`;
+    let key = `${renderPrimitive._attributeMask}:${renderMaterial._state}:${renderMaterial._materialName}:${this._sampleCount}`;
     if (key in this._pipelineCache) {
       return this._pipelineCache[key];
     }
@@ -617,6 +693,9 @@ export class GPURenderer {
         cullMode: renderMaterial.cullFace ? 'back' : 'none',
       },
       depthStencil: depthStencil,
+      multisample: {
+        count: this._sampleCount,
+      },
     });
 
     this._pipelineCache[key] = pipeline;
@@ -678,20 +757,29 @@ export class GPURenderer {
   }
 
   _createMaterialBindGroup(renderMaterial) {
-    // Write material uniforms.
-    let materialData = new Float32Array(MATERIAL_UNIFORM_SIZE / 4);
-    let offset = 0;
-    for (let u of renderMaterial._uniforms) {
-      materialData.set(u._value, offset);
-      // Pad to vec4 alignment.
-      offset += Math.ceil(u._value.length / 4) * 4;
+    if (!renderMaterial._uniformBuffer) {
+      renderMaterial._uniformBuffer = this._device.createBuffer({
+        size: MATERIAL_UNIFORM_SIZE,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      renderMaterial._uniformData = new Float32Array(MATERIAL_UNIFORM_SIZE / 4);
+      renderMaterial._uniformFrameId = -1;
     }
 
-    let materialBuffer = this._device.createBuffer({
-      size: MATERIAL_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._device.queue.writeBuffer(materialBuffer, 0, materialData);
+    if (renderMaterial._uniformFrameId != this._frameId) {
+      // Write material uniforms once per frame; the bind group can be reused.
+      let materialData = renderMaterial._uniformData;
+      materialData.fill(0);
+      let offset = 0;
+      for (let u of renderMaterial._uniforms) {
+        materialData.set(u._value, offset);
+        // Pad to vec4 alignment.
+        offset += Math.ceil(u._value.length / 4) * 4;
+      }
+
+      this._device.queue.writeBuffer(renderMaterial._uniformBuffer, 0, materialData);
+      renderMaterial._uniformFrameId = this._frameId;
+    }
 
     // Find the base color texture, or use white.
     let textureView = this._whiteTextureView;
@@ -704,14 +792,22 @@ export class GPURenderer {
       }
     }
 
-    return this._device.createBindGroup({
-      layout: this._materialBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: materialBuffer } },
-        { binding: 1, resource: sampler },
-        { binding: 2, resource: textureView },
-      ],
-    });
+    if (!renderMaterial._bindGroup ||
+        renderMaterial._bindGroupTextureView != textureView ||
+        renderMaterial._bindGroupSampler != sampler) {
+      renderMaterial._bindGroup = this._device.createBindGroup({
+        layout: this._materialBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: renderMaterial._uniformBuffer } },
+          { binding: 1, resource: sampler },
+          { binding: 2, resource: textureView },
+        ],
+      });
+      renderMaterial._bindGroupTextureView = textureView;
+      renderMaterial._bindGroupSampler = sampler;
+    }
+
+    return renderMaterial._bindGroup;
   }
 
   drawViews(views, rootNode) {
@@ -730,40 +826,66 @@ export class GPURenderer {
       this._cameraPositions[i][2] = p.z;
     }
 
+    let commandEncoder = this._device.createCommandEncoder();
+    let encodedPass = false;
+
     // For XR, we render one view at a time (each into a different texture array layer).
     for (let vi = 0; vi < views.length; vi++) {
       let view = views[vi];
       if (!view._colorView || !view._depthView) continue;
 
+      let colorView = view._colorView;
+      let resolveTarget = undefined;
+      let depthView = view._depthView;
+      let colorStoreOp = 'store';
+      if (this._sampleCount > 1) {
+        let attachmentSize = this._getViewAttachmentSize(view);
+        if (!attachmentSize) {
+          console.warn('Skipping MSAA view because no viewport size is available.');
+          continue;
+        }
+
+        colorView =
+            this._getMsaaAttachment(
+                this._msaaColorAttachments,
+                vi,
+                attachmentSize.width,
+                attachmentSize.height,
+                this._colorFormat).view;
+        depthView =
+            this._getMsaaAttachment(
+                this._msaaDepthAttachments,
+                vi,
+                attachmentSize.width,
+                attachmentSize.height,
+                this._depthFormat).view;
+        resolveTarget = view._colorView;
+        colorStoreOp = 'discard';
+      }
+
       // Update frame uniforms for this view.
-      let frameData = new Float32Array(FRAME_UNIFORM_SIZE / 4);
+      let frameData = this._frameData;
       frameData.set(view.projectionMatrix, 0);    // offset 0: projection (16 floats)
       frameData.set(view.viewMatrix, 16);          // offset 64: view (16 floats)
       frameData.set(this._globalLightDir, 32);     // offset 128: lightDir (3 floats)
       frameData.set(this._globalLightColor, 36);   // offset 144: lightColor (3 floats)
       frameData.set(this._cameraPositions[vi], 40); // offset 160: cameraPos (3 floats)
-      this._device.queue.writeBuffer(this._frameUniformBuffer, 0, frameData);
+      let frameUniform = this._getFrameUniform(vi);
+      this._device.queue.writeBuffer(frameUniform.buffer, 0, frameData);
 
-      let frameBindGroup = this._device.createBindGroup({
-        layout: this._frameBindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this._frameUniformBuffer } },
-        ],
-      });
-
-      let commandEncoder = this._device.createCommandEncoder();
       let passEncoder = commandEncoder.beginRenderPass({
         colorAttachments: [{
-          view: view._colorView,
+          view: colorView,
+          resolveTarget: resolveTarget,
           loadOp: vi === 0 || views.length > 1 ? 'clear' : 'load',
-          storeOp: 'store',
+          storeOp: colorStoreOp,
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         }],
-        depthStencilAttachment: view._depthView ? {
-          view: view._depthView,
+        depthStencilAttachment: depthView ? {
+          view: depthView,
           depthLoadOp: vi === 0 || views.length > 1 ? 'clear' : 'load',
           depthClearValue: 1.0,
-          depthStoreOp: 'store',
+          depthStoreOp: 'discard',
         } : undefined,
       });
 
@@ -772,7 +894,7 @@ export class GPURenderer {
         passEncoder.setViewport(vp.x, vp.y, vp.width, vp.height, 0.0, 1.0);
       }
 
-      passEncoder.setBindGroup(0, frameBindGroup);
+      passEncoder.setBindGroup(0, frameUniform.bindGroup);
 
       // Draw all render primitives.
       for (let renderPrimitives of this._renderPrimitives) {
@@ -782,6 +904,10 @@ export class GPURenderer {
       }
 
       passEncoder.end();
+      encodedPass = true;
+    }
+
+    if (encodedPass) {
       this._device.queue.submit([commandEncoder.finish()]);
     }
   }
@@ -818,16 +944,9 @@ export class GPURenderer {
       for (let instance of primitive._instances) {
         if (instance._activeFrameId != this._frameId) continue;
 
-        let modelBuffer = this._getModelUniformBuffer();
-        this._device.queue.writeBuffer(modelBuffer, 0, instance.worldMatrix);
-
-        let modelBindGroup = this._device.createBindGroup({
-          layout: this._modelBindGroupLayout,
-          entries: [
-            { binding: 0, resource: { buffer: modelBuffer } },
-          ],
-        });
-        passEncoder.setBindGroup(1, modelBindGroup);
+        let modelUniform = this._getModelUniform();
+        this._device.queue.writeBuffer(modelUniform.buffer, 0, instance.worldMatrix);
+        passEncoder.setBindGroup(1, modelUniform.bindGroup);
 
         if (indexed) {
           passEncoder.drawIndexed(primitive._elementCount);
