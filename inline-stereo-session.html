@@ -29,28 +29,35 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
     <link rel='icon' type='image/png' sizes='96x96' href='favicon-96x96.png'>
     <link rel='stylesheet' href='css/common.css'>
 
-    <title>Inline Stereo Session</title>
+    <title>Inline Multi-View Session</title>
   </head>
   <body>
     <header>
       <details open>
-        <summary>Inline Stereo Session</summary>
+        <summary>Inline Multi-View Session</summary>
         <p>
-          This sample demonstrates use of an 'inline-stereo' XRSession to
-          present stereo WebXR content directly on the page. The stereo
-          panorama uses eye-specific source imagery, and the solar system model
-          is rendered once for each XRView. The viewer pose can be adjusted by
-          clicking and dragging with mouse or touch.
+          This sample demonstrates use of an inline XRSession with the
+          'multi-view' and 'head-tracked' features to present stereo WebXR
+          content directly on the page. The stereo panorama uses eye-specific
+          source imagery, and the solar system model is rendered once for each
+          XRView. If head tracking is not granted, the session still renders
+          multi-view output without tracking to the user's head pose. The
+          viewer pose can be adjusted by clicking and dragging with mouse or
+          touch.
           <a class="back" href="./">Back</a>
         </p>
         <p>
+          <label><input id='multiViewFeature' type='checkbox' checked> multi-view</label><br/>
+          <label><input id='headTrackedFeature' type='checkbox' checked> head-tracked</label>
+        </p>
+        <p id='fovControls'>
           <input id='vertFOV' value='90' min='30' max='150' step='10' type='range'/><br/>
           <label id='vertFOVLabel' for="vertFOV">Vertical FOV: </label>
         </p>
         <p>
-          <button id='startInlineStereo' disabled>Start Inline Stereo</button>
+          <button id='startInlineMultiView' disabled>Start Inline Multi-View</button>
         </p>
-        <p id='inlineStereoStatus'>Checking inline-stereo support...</p>
+        <p id='inlineMultiViewStatus'>Checking inline WebXR support...</p>
       </details>
     </header>
     <script type="module">
@@ -60,21 +67,60 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       import {SkyboxNode} from './js/render/nodes/skybox.js';
       import {quat} from './js/render/math/gl-matrix.js';
 
-      const INLINE_STEREO_MODE = 'inline-stereo';
+      const INLINE_MODE = 'inline';
 
-      let inlineStereoSession = null;
-      let xrInlineStereoRefSpace = null;
+      let inlineMultiViewSession = null;
+      let xrInlineMultiViewRefSpace = null;
+      let multiViewFeature = document.getElementById('multiViewFeature');
+      let headTrackedFeature = document.getElementById('headTrackedFeature');
+      let fovControls = document.getElementById('fovControls');
       let fov = document.getElementById('vertFOV');
       let fovLabel = document.getElementById('vertFOVLabel');
-      let startButton = document.getElementById('startInlineStereo');
-      let inlineStereoStatus = document.getElementById('inlineStereoStatus');
+      let startButton = document.getElementById('startInlineMultiView');
+      let inlineMultiViewStatus = document.getElementById('inlineMultiViewStatus');
+
+      function updateFeatureControls() {
+        let useMultiView = multiViewFeature.checked;
+        if (!useMultiView) {
+          headTrackedFeature.checked = false;
+        }
+
+        multiViewFeature.disabled = !!inlineMultiViewSession;
+        headTrackedFeature.disabled = !useMultiView || !!inlineMultiViewSession;
+        fov.disabled = useMultiView;
+        fovControls.style.opacity = useMultiView ? '0.5' : '1';
+        startButton.textContent = useMultiView ?
+            'Start Inline Multi-View' : 'Start Inline Session';
+        updateFov();
+      }
+
+      function inlineSessionOptions() {
+        let requiredFeatures = [];
+        let optionalFeatures = [];
+
+        if (multiViewFeature.checked) {
+          requiredFeatures.push('multi-view');
+          if (headTrackedFeature.checked) {
+            optionalFeatures.push('head-tracked');
+          }
+        }
+
+        let options = {};
+        if (requiredFeatures.length) {
+          options.requiredFeatures = requiredFeatures;
+        }
+        if (optionalFeatures.length) {
+          options.optionalFeatures = optionalFeatures;
+        }
+        return options;
+      }
 
       function updateFov() {
         let value = parseFloat(fov.value);
         let radValue = value * (Math.PI / 180);
 
-        if (inlineStereoSession) {
-          inlineStereoSession.updateRenderState({
+        if (inlineMultiViewSession) {
+          inlineMultiViewSession.updateRenderState({
             inlineVerticalFieldOfView: radValue
           });
         }
@@ -86,10 +132,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         fovLabel.textContent = label;
       }
       fov.addEventListener('change', updateFov);
-      updateFov();
+      multiViewFeature.addEventListener('change', updateFeatureControls);
+      headTrackedFeature.addEventListener('change', updateFeatureControls);
+      updateFeatureControls();
 
       startButton.addEventListener('click', () => {
-        requestInlineStereoSession();
+        requestInlineMultiViewSession();
       });
 
       // WebGL scene globals.
@@ -98,7 +146,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       let scene = new Scene();
       let solarSystem = new Gltf2Node({url: 'media/gltf/space/space.gltf'});
       scene.addNode(solarSystem);
-      scene.addNode(new SkyboxNode({url: 'media/textures/milky-way-4k.png'}));
+      scene.addNode(new SkyboxNode({
+        url: 'media/textures/chess-pano-4k.png',
+        displayMode: 'stereoTopBottom'
+      }));
 
       async function initXR() {
         if (!navigator.xr) {
@@ -108,37 +159,38 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
         let supported = false;
         try {
-          supported = await navigator.xr.isSessionSupported(INLINE_STEREO_MODE);
+          supported = await navigator.xr.isSessionSupported(INLINE_MODE);
         } catch (err) {
-          setStatus(`Unable to query inline-stereo support: ${err.message}`);
+          setStatus(`Unable to query inline WebXR support: ${err.message}`);
           return;
         }
 
         if (!supported) {
-          setStatus('inline-stereo sessions are not supported by this browser.');
+          setStatus('inline WebXR sessions are not supported by this browser.');
           return;
         }
 
         startButton.disabled = false;
-        setStatus('inline-stereo is supported. Click Start Inline Stereo to begin.');
+        setStatus('inline multi-view is ready.');
       }
 
-      async function requestInlineStereoSession() {
-        if (inlineStereoSession) {
+      async function requestInlineMultiViewSession() {
+        if (inlineMultiViewSession) {
           return;
         }
 
         startButton.disabled = true;
-        setStatus('Requesting inline-stereo session...');
+        setStatus('Requesting inline session...');
 
         try {
-          let session = await navigator.xr.requestSession(INLINE_STEREO_MODE);
-          inlineStereoSession = session;
+          let session = await navigator.xr.requestSession(
+              INLINE_MODE, inlineSessionOptions());
+          inlineMultiViewSession = session;
           onSessionStarted(session);
-          updateFov();
+          updateFeatureControls();
         } catch (err) {
           startButton.disabled = false;
-          setStatus(`Failed to start inline-stereo session: ${err.message}`);
+          setStatus(`Failed to start inline multi-view session: ${err.message}`);
         }
       }
 
@@ -173,21 +225,22 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         });
 
         session.requestReferenceSpace('viewer').then((refSpace) => {
-          xrInlineStereoRefSpace = refSpace;
+          xrInlineMultiViewRefSpace = refSpace;
           session.requestAnimationFrame(onXRFrame);
         });
       }
 
       function onSessionEnded() {
-        inlineStereoSession = null;
-        xrInlineStereoRefSpace = null;
+        inlineMultiViewSession = null;
+        xrInlineMultiViewRefSpace = null;
         startButton.disabled = false;
-        setStatus('inline-stereo session ended.');
+        updateFeatureControls();
+        setStatus('inline multi-view session ended.');
       }
 
       function onXRFrame(t, frame) {
         let session = frame.session;
-        let refSpace = getAdjustedRefSpace(xrInlineStereoRefSpace);
+        let refSpace = getAdjustedRefSpace(xrInlineMultiViewRefSpace);
         let pose = frame.getViewerPose(refSpace);
 
         scene.startFrame();
@@ -195,7 +248,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         session.requestAnimationFrame(onXRFrame);
 
         if (pose) {
-          updateInlineStereoStatus(pose);
+          updateInlineMultiViewStatus(session, pose);
 
           let glLayer = session.renderState.baseLayer;
           gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
@@ -209,7 +262,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             scene.draw(view.projectionMatrix, view.transform, renderEyeForView(view));
           }
         } else {
-          setStatus('inline-stereo session is running, but no viewer pose is available.');
+          setStatus('inline multi-view session is running, but no viewer pose is available.');
         }
 
         scene.endFrame();
@@ -219,13 +272,25 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         return view.eye == 'right' ? 'right' : 'left';
       }
 
-      function updateInlineStereoStatus(pose) {
+      function getEnabledFeatureList(session) {
+        return session.enabledFeatures ? Array.from(session.enabledFeatures) : [];
+      }
+
+      function updateInlineMultiViewStatus(session, pose) {
         let viewList = pose.views.map((view) => view.eye).join(', ');
-        setStatus(`inline-stereo session: ${pose.views.length} view(s) (${viewList})`);
+        let featureStatus = '';
+        if (session.enabledFeatures) {
+          let enabledFeatures = getEnabledFeatureList(session);
+          let tracking = enabledFeatures.includes('head-tracked') ?
+              'head tracked' : 'not head tracked';
+          featureStatus = `; ${tracking}; features: ${enabledFeatures.join(', ')}`;
+        }
+        setStatus(
+            `inline multi-view session: ${pose.views.length} view(s) (${viewList})${featureStatus}`);
       }
 
       function setStatus(message) {
-        inlineStereoStatus.textContent = message;
+        inlineMultiViewStatus.textContent = message;
       }
 
       // Inline view adjustment code
