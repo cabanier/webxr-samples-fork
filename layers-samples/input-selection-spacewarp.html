@@ -46,6 +46,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         <label><input type="checkbox" id="use_space_warp" checked>space warp</label>
         <label><input type="checkbox" id="use_multiview" disabled>multiview</label>
         <label><input type="checkbox" id="do_antialias" disabled>MSAA</label>
+        <div>
+          <label for="shape_count">shapes <output id="shape_count_value" for="shape_count">9</output></label><br>
+          <input type="range" id="shape_count" min="4" max="19" value="9">
+        </div>
       </details>
     </header>
     <script type="module">
@@ -72,6 +76,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       let useSpaceWarp = document.getElementById('use_space_warp');
       let useMultiview = document.getElementById('use_multiview');
       let doAntialias = document.getElementById('do_antialias');
+      let shapeCountControl = document.getElementById('shape_count');
+      let shapeCountValue = document.getElementById('shape_count_value');
       let xrButton = null;
       let xrImmersiveRefSpace = null;
       let inlineViewerHelper = null;
@@ -119,6 +125,80 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
       let currentlySelectedShapes = [null, null];
       let currentlyGrabbedShapes = [null, null];
       const previousMatrices = {};
+      const MIN_SHAPE_COUNT = 4;
+      const DEFAULT_SHAPE_COUNT = 9;
+      const MAX_SHAPE_COUNT = 19;
+      const SHAPE_DEFINITIONS = [
+        {primitive: 0, position: [-1.1, 1.45, -1.2], color: [1.0, 0.0, 0.0]},
+        {primitive: 1, position: [0.0, 1.45, -1.2], color: [0.0, 1.0, 0.0]},
+        {primitive: 2, position: [1.1, 1.45, -1.2], color: [0.0, 0.0, 1.0]},
+        {primitive: 3, position: [-1.1, 1.75, -1.6], color: [1.0, 0.8, 0.0]},
+        {primitive: 4, position: [0.0, 1.75, -1.6], color: [0.0, 0.9, 1.0]},
+        {primitive: 5, position: [1.1, 1.75, -1.6], color: [1.0, 0.0, 0.9]},
+        {primitive: 6, position: [-1.1, 2.05, -2.0], color: [1.0, 0.45, 0.0]},
+        {primitive: 7, position: [0.0, 2.05, -2.0], color: [0.55, 0.25, 1.0]},
+        {primitive: 8, position: [1.1, 2.05, -2.0], color: [0.9, 0.9, 0.9]},
+        {primitive: 0, position: [-1.65, 1.55, -1.45], color: [0.25, 1.0, 0.55]},
+        {primitive: 1, position: [1.65, 1.55, -1.45], color: [1.0, 0.35, 0.55]},
+        {primitive: 2, position: [-1.65, 1.9, -1.85], color: [0.45, 0.8, 1.0]},
+        {primitive: 3, position: [1.65, 1.9, -1.85], color: [1.0, 0.75, 0.35]},
+        {primitive: 4, position: [-0.55, 2.35, -2.35], color: [0.35, 1.0, 0.95]},
+        {primitive: 5, position: [0.55, 2.35, -2.35], color: [0.95, 0.45, 1.0]},
+        {primitive: 6, position: [0.0, 1.25, -0.95], color: [0.85, 1.0, 0.35]},
+        {primitive: 7, position: [-1.35, 2.45, -2.75], color: [0.25, 0.55, 1.0]},
+        {primitive: 8, position: [0.0, 2.55, -2.85], color: [1.0, 0.55, 0.25]},
+        {primitive: 0, position: [1.35, 2.45, -2.75], color: [0.65, 1.0, 0.25]},
+      ];
+
+      // Reads and clamps the live stress-shape count from the slider.
+      function getShapeCount() {
+        const count = Number.parseInt(shapeCountControl.value, 10);
+        if (!Number.isFinite(count)) {
+          return DEFAULT_SHAPE_COUNT;
+        }
+        return Math.min(MAX_SHAPE_COUNT, Math.max(MIN_SHAPE_COUNT, count));
+      }
+
+      // Shows or hides prebuilt shape slots without rebuilding their heavy geometry.
+      function applyShapeCountToShapes(targetShapes, count) {
+        for (let i = 0; i < targetShapes.length; ++i) {
+          const shape = targetShapes[i];
+          const active = i < count;
+          if (!active) {
+            shape.selected = false;
+            shape.grabbed = false;
+            shape.originalPos = null;
+            shape.position = shape.homePosition.slice();
+            shape.scale = [1, 1, 1];
+          } else if (!shape.active) {
+            shape.position = shape.homePosition.slice();
+            shape.scale = [1, 1, 1];
+          }
+
+          shape.active = active;
+          shape.node.visible = active;
+          shape.node.selectable = active;
+        }
+      }
+
+      // Applies slider changes to both render scenes and drops stale interaction state.
+      function syncShapeCount() {
+        const count = getShapeCount();
+        shapeCountControl.value = count;
+        shapeCountValue.textContent = String(count);
+
+        applyShapeCountToShapes(shapes, count);
+        applyShapeCountToShapes(motionShapes, count);
+
+        for (let i = 0; i < currentlySelectedShapes.length; ++i) {
+          if (currentlySelectedShapes[i] && !currentlySelectedShapes[i].active) {
+            currentlySelectedShapes[i] = null;
+          }
+          if (currentlyGrabbedShapes[i] && !currentlyGrabbedShapes[i].active) {
+            currentlyGrabbedShapes[i] = null;
+          }
+        }
+      }
 
       // PBR-compatible material with deliberately expensive procedural fragment work.
       class FragmentStressMaterial extends PbrMaterial {
@@ -596,20 +676,31 @@ vec4 fragment_main() {
         ];
 
         // Adds one selectable stress shape and tracks the sample state outside the scene graph.
-        function addShape(shapeIndex, x, y, z, r, g, b) {
+        function addShape(shapeDefinition, slotIndex) {
           const shapeMaterial = new FragmentStressMaterial();
           shapeMaterial.state.cullFace = false;
-          shapeMaterial.baseColorFactor.value = [r, g, b, 1.0];
+          shapeMaterial.baseColorFactor.value = [
+            shapeDefinition.color[0],
+            shapeDefinition.color[1],
+            shapeDefinition.color[2],
+            1.0
+          ];
           const shapeRenderPrimitive =
-              targetRenderer.createRenderPrimitive(shapePrimitives[shapeIndex], shapeMaterial);
+              targetRenderer.createRenderPrimitive(
+                  shapePrimitives[shapeDefinition.primitive],
+                  shapeMaterial);
           const shapeNode = new Node();
           shapeNode.addRenderPrimitive(shapeRenderPrimitive);
-          shapeNode.selectable = true;
+          const active = slotIndex < getShapeCount();
+          shapeNode.selectable = active;
+          shapeNode.visible = active;
 
           const shape = {
+            active: active,
             node: shapeNode,
             renderPrimitive: shapeRenderPrimitive,
-            position: [x, y, z],
+            homePosition: shapeDefinition.position.slice(),
+            position: shapeDefinition.position.slice(),
             scale: [1, 1, 1],
             selected: false,
             grabbed: false,
@@ -619,15 +710,9 @@ vec4 fragment_main() {
           targetScene.addNode(shapeNode);
         }
 
-        addShape(0, -1.1, 1.45, -1.2, 1.0, 0.0, 0.0);
-        addShape(1, 0.0, 1.45, -1.2, 0.0, 1.0, 0.0);
-        addShape(2, 1.1, 1.45, -1.2, 0.0, 0.0, 1.0);
-        addShape(3, -1.1, 1.75, -1.6, 1.0, 0.8, 0.0);
-        addShape(4, 0.0, 1.75, -1.6, 0.0, 0.9, 1.0);
-        addShape(5, 1.1, 1.75, -1.6, 1.0, 0.0, 0.9);
-        addShape(6, -1.1, 2.05, -2.0, 1.0, 0.45, 0.0);
-        addShape(7, 0.0, 2.05, -2.0, 0.55, 0.25, 1.0);
-        addShape(8, 1.1, 2.05, -2.0, 0.9, 0.9, 0.9);
+        for (let i = 0; i < SHAPE_DEFINITIONS.length; ++i) {
+          addShape(SHAPE_DEFINITIONS[i], i);
+        }
 
         return {scene: targetScene, shapes: targetShapes};
       }
@@ -750,6 +835,8 @@ vec4 fragment_main() {
 
       useSpaceWarp.addEventListener('change', updateFeatureControls);
       useMultiview.addEventListener('change', updateFeatureControls);
+      shapeCountControl.addEventListener('input', syncShapeCount);
+      syncShapeCount();
 
       // Creates the shared WebGL2 context and caches extension support.
       function initGL() {
