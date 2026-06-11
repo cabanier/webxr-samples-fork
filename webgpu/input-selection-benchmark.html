@@ -68,6 +68,7 @@ SOFTWARE.
       <canvas id="webgpu_canvas" width="960" height="540"></canvas>
     </main>
     <script type="module">
+      // This sample is an AI-assisted port of the equivalent WebGL sample, and may not represent WebGPU best practices.
       import {WebXRButton} from '../js/util/webxr-button.js';
       import {GPUScene, WebXRGPUView} from '../js/render/scenes/scene-gpu.js';
       import {GPURenderer, RenderView, createWebGPUContext} from '../js/render/core/renderer-gpu.js';
@@ -428,6 +429,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
       let spaceWarpEnabled = false;
       let identityDeltaPose = null;
 
+      // This WebGPU code is an AI-assisted port of the equivalent WebGL sample,
+      // and may not represent WebGPU best practices.
       // WebGPU globals.
       let device = null;
       let renderer = null;
