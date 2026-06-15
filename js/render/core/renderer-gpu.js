@@ -309,6 +309,16 @@ const MODEL_UNIFORM_SIZE = 64;
 // Material uniforms: baseColorFactor(16) + metallicRoughnessFactor(8+pad8) + emissiveFactor(12+pad4) + occlusionStrength(4+pad12) = 64
 const MATERIAL_UNIFORM_SIZE = 64;
 
+function vertexFormatForAttribute(attribute) {
+  switch (attribute._componentCount) {
+    case 1: return 'float32';
+    case 2: return 'float32x2';
+    case 3: return 'float32x3';
+    case 4: return 'float32x4';
+  }
+  throw new Error(`Unsupported vertex component count: ${attribute._componentCount}`);
+}
+
 export class GPURenderer {
   constructor(device, colorFormat, options = {}) {
     options = typeof options == 'number' ? {sampleCount: options} : options;
@@ -618,13 +628,7 @@ export class GPURenderer {
     let layouts = [];
     for (let ab of renderPrimitive._attributeBuffers) {
       let a = ab.attrib;
-      let format;
-      switch (a._componentCount) {
-        case 1: format = 'float32'; break;
-        case 2: format = 'float32x2'; break;
-        case 3: format = 'float32x3'; break;
-        case 4: format = 'float32x4'; break;
-      }
+      let format = vertexFormatForAttribute(a);
       layouts.push({
         arrayStride: a._stride || (a._componentCount * 4),
         attributes: [{
@@ -637,8 +641,20 @@ export class GPURenderer {
     return layouts;
   }
 
+  _vertexBufferLayoutKeyForPrimitive(renderPrimitive) {
+    return renderPrimitive._attributeBuffers.map((ab) => {
+      let a = ab.attrib;
+      let stride = a._stride || (a._componentCount * 4);
+      let format = vertexFormatForAttribute(a);
+      return `${a._attribIndex}:${format}:${stride}:${a._byteOffset}`;
+    }).join('|');
+  }
+
   _getOrCreatePipeline(renderPrimitive, renderMaterial) {
-    let key = `${renderPrimitive._attributeMask}:${renderMaterial._state}:${renderMaterial._materialName}:${this._sampleCount}`;
+    // WebGPU pipelines bake vertex buffer layouts, so primitives with the same
+    // attribute mask but different buffer slot order need distinct pipelines.
+    let vertexLayoutKey = this._vertexBufferLayoutKeyForPrimitive(renderPrimitive);
+    let key = `${renderPrimitive._attributeMask}:${vertexLayoutKey}:${renderMaterial._state}:${renderMaterial._materialName}:${this._sampleCount}`;
     if (key in this._pipelineCache) {
       return this._pipelineCache[key];
     }

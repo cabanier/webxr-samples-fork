@@ -991,6 +991,42 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
         }
       }
 
+      function shouldRenderControllerMesh(inputSource) {
+        return inputSource.targetRayMode == 'tracked-pointer';
+      }
+
+      function getControllerMeshKey(inputSource) {
+        return inputSource.profiles[0] + '_' + inputSource.handedness;
+      }
+
+      function addControllerMesh(key, assetPath) {
+        if (controllers[key] || !scene) {
+          return;
+        }
+
+        let controllerNode = new Gltf2GPUNode({url: assetPath});
+        setNodeTreeVisible(controllerNode, false);
+        controllers[key] = controllerNode;
+        scene.addNode(controllerNode);
+      }
+
+      function loadControllerMesh(inputSource) {
+        if (!shouldRenderControllerMesh(inputSource)) {
+          return;
+        }
+
+        const key = getControllerMeshKey(inputSource);
+        fetchProfile(inputSource, DEFAULT_PROFILES_PATH).then(({assetPath}) => {
+          addControllerMesh(key, assetPath);
+        });
+      }
+
+      function loadControllerMeshes(session) {
+        for (let inputSource of session.inputSources) {
+          loadControllerMesh(inputSource);
+        }
+      }
+
       function clearPreviousMatrices() {
         for (let key of Object.keys(previousMatrices)) {
           delete previousMatrices[key];
@@ -1948,17 +1984,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
           session.addEventListener('inputsourceschange', (event) => {
             for (let inputSource of event.added) {
-              if (inputSource.targetRayMode == 'tracked-pointer') {
-                fetchProfile(inputSource, DEFAULT_PROFILES_PATH).then(({profile, assetPath}) => {
-                  let key = inputSource.profiles[0] + '_' + inputSource.handedness;
-                  if (!controllers[key] && scene) {
-                    let controllerNode = new Gltf2GPUNode({url: assetPath});
-                    setNodeTreeVisible(controllerNode, false);
-                    controllers[key] = controllerNode;
-                    scene.addNode(controllerNode);
-                  }
-                });
-              }
+              loadControllerMesh(inputSource);
             }
           });
         }
@@ -1981,6 +2007,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
         configureCanvas(colorFormat);
         createRendererAndScene(colorFormat);
+        if (!benchmarkSession) {
+          loadControllerMeshes(session);
+        }
 
         updateFeatureControls();
 
@@ -2150,10 +2179,10 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
         }
 
         for (let inputSource of frame.session.inputSources) {
-          if (inputSource.gripSpace) {
+          if (shouldRenderControllerMesh(inputSource) && inputSource.gripSpace) {
             let gripPose = frame.getPose(inputSource.gripSpace, xrRefSpace);
             if (gripPose) {
-              let key = inputSource.profiles[0] + '_' + inputSource.handedness;
+              let key = getControllerMeshKey(inputSource);
               if (controllers[key]) {
                 controllers[key].matrix = gripPose.transform.matrix;
                 setNodeTreeVisible(controllers[key], true);
