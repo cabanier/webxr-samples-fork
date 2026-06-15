@@ -342,9 +342,9 @@ class GPURenderMaterial {
 // Byte sizes for uniform buffer layout (std140-aligned).
 // Frame uniforms: projection(64) + view(64) + lightDir(16) + lightColor(16) + cameraPos(16) = 176
 const FRAME_UNIFORM_SIZE = 176;
-// Multiview frame uniforms: 2 projection matrices, 2 view matrices,
-// lightDir, lightColor, and 2 vec4 camera positions = 320
-const VIEW_INSTANCING_FRAME_UNIFORM_SIZE = 320;
+// Multiview frame uniforms: 2 view-projection matrices, 2 projection matrices,
+// 2 view matrices, lightDir, lightColor, and 2 vec4 camera positions = 448
+const VIEW_INSTANCING_FRAME_UNIFORM_SIZE = 448;
 // Model uniforms: modelMatrix(64)
 const MODEL_UNIFORM_SIZE = 64;
 // Material uniforms: baseColorFactor(16) + metallicRoughnessFactor(8+pad8) + emissiveFactor(12+pad4) + occlusionStrength(4+pad12) = 64
@@ -363,6 +363,7 @@ const STANDARD_FRAME_UNIFORM_WGSL = `struct FrameUniforms {
 };`;
 
 const VIEW_INSTANCING_FRAME_UNIFORM_WGSL = `struct FrameUniforms {
+  viewProjectionMatrices: array<mat4x4f, 2>,
   projectionMatrices: array<mat4x4f, 2>,
   viewMatrices: array<mat4x4f, 2>,
   lightDirection: vec3f,
@@ -392,6 +393,9 @@ function applyViewInstancingToWgsl(source, wgslEnable) {
   if (output.includes(STANDARD_FRAME_UNIFORM_WGSL)) {
     output = output
         .replace(STANDARD_FRAME_UNIFORM_WGSL, VIEW_INSTANCING_FRAME_UNIFORM_WGSL)
+        .replaceAll(
+            'frame.projectionMatrix * frame.viewMatrix *',
+            'frame.viewProjectionMatrices[viewIndex] *')
         .replaceAll('frame.projectionMatrix', 'frame.projectionMatrices[viewIndex]')
         .replaceAll('frame.viewMatrix', 'frame.viewMatrices[viewIndex]')
         .replaceAll('frame.cameraPosition', 'frame.cameraPositions[viewIndex].xyz');
@@ -406,7 +410,7 @@ function applyViewInstancingToWgsl(source, wgslEnable) {
 
   return output.replace(
       'fn vs_main(input: VertexInput) -> VertexOutput {\n',
-      'fn vs_main(input: VertexInput, @builtin(view_index) rawViewIndex: u32) -> VertexOutput {\n  let viewIndex = min(rawViewIndex, 1u);\n');
+      'fn vs_main(input: VertexInput, @builtin(view_index) rawViewIndex: u32) -> VertexOutput {\n  let viewIndex = rawViewIndex;\n');
 }
 
 function vertexFormatForAttribute(attribute) {
@@ -430,6 +434,11 @@ export class GPURenderer {
     this._viewInstancing = !!options.viewInstancing;
     this._viewInstancingWgslEnable =
         options.viewInstancingWgslEnable || 'view_instancing';
+    this._transientMsaaAttachments =
+        !this._viewInstancing ||
+        !!getSupportedGPUFeature(
+            device.features,
+            MULTISAMPLED_ARRAY_TEXTURE_FEATURES);
     this._frameUniformSize = this._viewInstancing ?
         VIEW_INSTANCING_FRAME_UNIFORM_SIZE :
         FRAME_UNIFORM_SIZE;
@@ -439,6 +448,7 @@ export class GPURenderer {
     this._textureCache = {};
     this._msaaColorAttachments = [];
     this._msaaDepthAttachments = [];
+    this._viewProjectionMatrices = [mat4.create(), mat4.create()];
     this._renderPrimitives = Array(RENDER_ORDER.DEFAULT);
     this._cameraPositions = [];
 
@@ -580,11 +590,16 @@ export class GPURenderer {
       attachment.texture.destroy();
     }
 
+    let usage = GPUTextureUsage.RENDER_ATTACHMENT;
+    if (GPUTextureUsage.TRANSIENT_ATTACHMENT && this._transientMsaaAttachments) {
+      usage |= GPUTextureUsage.TRANSIENT_ATTACHMENT;
+    }
+
     let texture = this._device.createTexture({
       size: [width, height, depthOrArrayLayers],
       sampleCount: this._sampleCount,
       format: format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      usage: usage,
     });
     attachment = {
       texture,
@@ -995,12 +1010,17 @@ export class GPURenderer {
     frameData.fill(0);
     const viewCount = Math.min(views.length, MAX_VIEW_INSTANCE_COUNT);
     for (let i = 0; i < viewCount; ++i) {
-      frameData.set(views[i].projectionMatrix, i * 16);
-      frameData.set(views[i].viewMatrix, 32 + i * 16);
-      frameData.set(this._cameraPositions[i], 72 + i * 4);
+      mat4.multiply(
+          this._viewProjectionMatrices[i],
+          views[i].projectionMatrix,
+          views[i].viewMatrix);
+      frameData.set(this._viewProjectionMatrices[i], i * 16);
+      frameData.set(views[i].projectionMatrix, 32 + i * 16);
+      frameData.set(views[i].viewMatrix, 64 + i * 16);
+      frameData.set(this._cameraPositions[i], 104 + i * 4);
     }
-    frameData.set(this._globalLightDir, 64);
-    frameData.set(this._globalLightColor, 68);
+    frameData.set(this._globalLightDir, 96);
+    frameData.set(this._globalLightColor, 100);
     this._device.queue.writeBuffer(frameUniform.buffer, 0, frameData);
   }
 
