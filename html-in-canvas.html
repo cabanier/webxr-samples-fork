@@ -1062,7 +1062,7 @@ SOFTWARE.
 
       function onRequestSession() {
         return navigator.xr.requestSession('immersive-vr', {
-          requiredFeatures: ['html-in-canvas'],
+          optionalFeatures: ['html-in-canvas'],
         }).then(onSessionStarted).catch((error) => {
           supportStatus.textContent =
               `Unable to start an HTML-in-Canvas session: ${error.message}`;
