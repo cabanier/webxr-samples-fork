@@ -1,0 +1,1126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <!--
+Copyright 2026 The Immersive Web Community Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-->
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png">
+    <link rel="stylesheet" href="css/common.css">
+
+    <title>HTML-in-Canvas</title>
+    <style>
+      #support-status {
+        margin: 0.75em 0 0;
+        color: #3d4650;
+      }
+
+      #xr-canvas {
+        background: #16191d;
+      }
+
+      main.preview {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+      }
+
+      #preview-canvas {
+        position: relative;
+        left: auto;
+        top: auto;
+        right: auto;
+        bottom: auto;
+        z-index: 1;
+        display: block;
+        width: min(560px, calc(100% - 24px));
+        height: auto;
+        aspect-ratio: 4 / 3;
+        margin: 16px auto;
+        border: 1px solid #aeb5bd;
+        background: #ffffff;
+        touch-action: auto;
+      }
+
+      .control-panel {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 560px;
+        height: 420px;
+        box-sizing: border-box;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+        border: 2px solid #24292f;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #202428;
+        font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        transform-origin: 0 0;
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 20px 22px 16px;
+        border-bottom: 1px solid #d7dce1;
+        background: #f7f8fa;
+      }
+
+      .panel-header h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        white-space: nowrap;
+        color: #285943;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .status-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #2f8f5b;
+      }
+
+      .panel-body {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 20px;
+        padding: 20px 22px;
+      }
+
+      .summary {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .summary p {
+        margin: 0;
+        color: #5b636c;
+      }
+
+      .metric {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        gap: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #e2e5e9;
+      }
+
+      .metric-label {
+        color: #68717a;
+        font-size: 14px;
+      }
+
+      .metric-value {
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .check-row input {
+        width: 22px;
+        height: 22px;
+        margin: 0;
+        accent-color: #2f6fdd;
+      }
+
+      .log-column {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 8px;
+      }
+
+      .log-column h2 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0;
+      }
+
+      .event-log {
+        min-height: 0;
+        margin: 0;
+        padding: 8px 10px 8px 30px;
+        overflow-y: auto;
+        border: 1px solid #bfc6ce;
+        background: #f7f8fa;
+        color: #3d4650;
+        scrollbar-color: #7a848f #e7eaee;
+      }
+
+      .event-log li {
+        padding: 6px 2px;
+        border-bottom: 1px solid #dde1e5;
+      }
+
+      .event-log li:last-child {
+        border-bottom: 0;
+      }
+
+      .panel-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 22px;
+        border-top: 1px solid #d7dce1;
+        background: #f7f8fa;
+      }
+
+      .panel-message {
+        min-width: 0;
+        color: #545d66;
+        font-size: 14px;
+      }
+
+      .add-entry {
+        min-width: 132px;
+        min-height: 42px;
+        border: 1px solid #2058ad;
+        border-radius: 6px;
+        background: #2f6fdd;
+        color: #ffffff;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .add-entry:hover,
+      .add-entry:focus-visible {
+        background: #245ebf;
+      }
+
+      .add-entry:active {
+        background: #194b9c;
+      }
+
+      .crumple-card {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 360px;
+        height: 300px;
+        box-sizing: border-box;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+        border: 2px solid #202428;
+        border-radius: 8px;
+        background: #fffdf8;
+        color: #202428;
+        font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        transform-origin: 0 0;
+      }
+
+      .crumple-card-header,
+      .crumple-card-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 18px;
+      }
+
+      .crumple-card-header {
+        border-bottom: 1px solid #d9d6cd;
+        background: #f5c451;
+      }
+
+      .crumple-kicker,
+      .crumple-code {
+        font-size: 13px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .crumple-state {
+        padding: 3px 8px;
+        border: 1px solid #202428;
+        border-radius: 4px;
+        background: #fffdf8;
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .crumple-card-body {
+        min-height: 0;
+        padding: 18px;
+      }
+
+      .crumple-card-body h2 {
+        margin: 0 0 8px;
+        font-size: 27px;
+        line-height: 1.1;
+        letter-spacing: 0;
+      }
+
+      .crumple-card-body p {
+        margin: 0;
+        color: #56534d;
+      }
+
+      .crumple-signal {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 18px;
+        margin-top: 18px;
+      }
+
+      .crumple-signal-label {
+        color: #56534d;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .crumple-signal-bars {
+        display: grid;
+        width: 92px;
+        height: 28px;
+        grid-template-columns: repeat(5, 1fr);
+        align-items: end;
+        gap: 5px;
+      }
+
+      .crumple-signal-bar {
+        height: 100%;
+        background: #2f8f5b;
+        transform: scaleY(0.35);
+        transform-origin: center bottom;
+        animation: signal-rise 1.1s ease-in-out infinite alternate;
+      }
+
+      .crumple-signal-bar:nth-child(2) {
+        animation-delay: -0.45s;
+      }
+
+      .crumple-signal-bar:nth-child(3) {
+        animation-delay: -0.8s;
+      }
+
+      .crumple-signal-bar:nth-child(4) {
+        animation-delay: -0.2s;
+      }
+
+      .crumple-signal-bar:nth-child(5) {
+        animation-delay: -0.65s;
+      }
+
+      .crumple-track {
+        position: relative;
+        height: 5px;
+        margin-top: 12px;
+        overflow: hidden;
+        background: #d9d6cd;
+      }
+
+      .crumple-track::after {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 34%;
+        background: #d94b3d;
+        content: "";
+        animation: track-scan 1.8s ease-in-out infinite alternate;
+      }
+
+      .crumple-card-footer {
+        border-top: 1px solid #d9d6cd;
+        background: #f4f1e9;
+      }
+
+      .crumple-toggle {
+        min-width: 116px;
+        min-height: 40px;
+        border: 1px solid #8f2d24;
+        border-radius: 6px;
+        background: #d94b3d;
+        color: #ffffff;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .crumple-toggle:hover,
+      .crumple-toggle:focus-visible {
+        background: #bd3d31;
+      }
+
+      .crumple-toggle:active {
+        background: #982f27;
+      }
+
+      @keyframes signal-rise {
+        from {
+          opacity: 0.58;
+          transform: scaleY(0.28);
+        }
+        to {
+          opacity: 1;
+          transform: scaleY(1);
+        }
+      }
+
+      @keyframes track-scan {
+        from {
+          transform: translateX(-15%);
+        }
+        to {
+          transform: translateX(210%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .crumple-signal-bar,
+        .crumple-track::after {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <details open>
+        <summary>HTML-in-Canvas</summary>
+        <p>
+          This sample renders interactive canvas fallback content into an
+          immersive WebXR scene. Controller input is routed to the HTML button,
+          checkbox, and scroller by the user agent.
+          <a class="back" href="./">Back</a>
+        </p>
+        <p id="support-status" role="status">Checking browser support...</p>
+      </details>
+    </header>
+
+    <main class="preview">
+      <p>The same controls are rendered below with Canvas 2D.</p>
+      <canvas id="preview-canvas" width="560" height="420" layoutsubtree="true"></canvas>
+    </main>
+
+    <canvas id="xr-canvas" width="560" height="420" layoutsubtree="true">
+      <section id="xr-control-panel" class="control-panel" aria-label="Operations panel">
+        <div class="panel-header">
+          <h1>Operations</h1>
+          <span class="status-badge"><span class="status-dot"></span>Connected</span>
+        </div>
+
+        <div class="panel-body">
+          <div class="summary">
+            <p>Review recent activity and update the panel controls.</p>
+
+            <div class="metric">
+              <span class="metric-label">Entries added</span>
+              <strong class="metric-value" data-role="entry-count">0</strong>
+            </div>
+
+            <label class="check-row">
+              <input data-role="notifications" type="checkbox" checked>
+              <span data-role="notification-label">Notifications enabled</span>
+            </label>
+          </div>
+
+          <div class="log-column">
+            <h2>Activity</h2>
+            <ol class="event-log" data-role="event-log" tabindex="0">
+              <li>Session configuration loaded</li>
+              <li>Input routing available</li>
+              <li>Panel texture synchronized</li>
+              <li>Local reference space ready</li>
+              <li>Controller targets connected</li>
+              <li>Rendering pipeline initialized</li>
+              <li>Waiting for user input</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <span class="panel-message" data-role="panel-message" aria-live="polite">Ready for input</span>
+          <button class="add-entry" data-role="add-entry" type="button">Add entry</button>
+        </div>
+      </section>
+
+      <article id="xr-crumple-card" class="crumple-card" aria-label="Field note">
+        <div class="crumple-card-header">
+          <span class="crumple-kicker">Interaction sample</span>
+          <span class="crumple-state" data-role="crumple-state">Flat</span>
+        </div>
+        <div class="crumple-card-body">
+          <h2>Field note 07</h2>
+          <p>The input surface is synchronized with the rendered XR geometry.</p>
+          <div class="crumple-signal" aria-hidden="true">
+            <span class="crumple-signal-label">Live signal</span>
+            <span class="crumple-signal-bars">
+              <span class="crumple-signal-bar"></span>
+              <span class="crumple-signal-bar"></span>
+              <span class="crumple-signal-bar"></span>
+              <span class="crumple-signal-bar"></span>
+              <span class="crumple-signal-bar"></span>
+            </span>
+          </div>
+          <div class="crumple-track" aria-hidden="true"></div>
+        </div>
+        <div class="crumple-card-footer">
+          <span class="crumple-code">XR-HTML</span>
+          <button class="crumple-toggle" data-role="crumple-toggle" type="button" aria-pressed="false">Crumple</button>
+        </div>
+      </article>
+    </canvas>
+
+    <script type="module">
+      import {WebXRButton} from './js/util/webxr-button.js';
+      import {Material} from './js/render/core/material.js';
+      import {Node} from './js/render/core/node.js';
+      import {Renderer} from './js/render/core/renderer.js';
+      import {ExternalTexture} from './js/render/core/texture.js';
+      import {PrimitiveStream} from './js/render/geometry/primitive-stream.js';
+      import {SkyboxNode} from './js/render/nodes/skybox.js';
+      import {Scene} from './js/render/scenes/scene.js';
+
+      const PANEL_WIDTH = 560;
+      const PANEL_HEIGHT = 420;
+      const PANEL_TEXTURE_SCALE = 2;
+      const PANEL_TEXTURE_WIDTH = PANEL_WIDTH * PANEL_TEXTURE_SCALE;
+      const PANEL_TEXTURE_HEIGHT = PANEL_HEIGHT * PANEL_TEXTURE_SCALE;
+      const PANEL_WORLD_WIDTH = 1.2;
+      const PANEL_CENTER_X = -0.38;
+      const PANEL_DISTANCE = -1.6;
+      const PANEL_TEXTURE_KEY = 'html-in-canvas-panel';
+      const CARD_WIDTH = 360;
+      const CARD_HEIGHT = 300;
+      const CARD_TEXTURE_SCALE = 2;
+      const CARD_TEXTURE_WIDTH = CARD_WIDTH * CARD_TEXTURE_SCALE;
+      const CARD_TEXTURE_HEIGHT = CARD_HEIGHT * CARD_TEXTURE_SCALE;
+      const CARD_WORLD_WIDTH = 0.66;
+      const CARD_CENTER_X = 0.66;
+      const CARD_DISTANCE = -1.58;
+      const CARD_TEXTURE_KEY = 'html-in-canvas-crumple-card';
+      const CRUMPLE_DURATION_MS = 900;
+      const CARD_ANIMATION_FRAME_INTERVAL_MS = 1000 / 30;
+
+      class HTMLPanelMaterial extends Material {
+        constructor(texture) {
+          super();
+          this.state.cullFace = false;
+          this.state.blend = true;
+          this.panelTexture = this.defineSampler('panelTexture');
+          this.panelTexture.texture = texture;
+        }
+
+        get materialName() {
+          return 'HTML_IN_CANVAS_PANEL';
+        }
+
+        get vertexSource() {
+          return `
+          in vec3 POSITION;
+          in vec2 TEXCOORD_0;
+
+          out vec2 vTexCoord;
+
+          vec4 vertex_main(mat4 proj, mat4 view, mat4 model) {
+            vTexCoord = TEXCOORD_0;
+            return proj * view * model * vec4(POSITION, 1.0);
+          }`;
+        }
+
+        get fragmentSource() {
+          return `
+          precision highp float;
+
+          uniform sampler2D panelTexture;
+          in vec2 vTexCoord;
+
+          vec4 fragment_main() {
+            vec4 panelColor = texture(panelTexture, vTexCoord);
+            if (panelColor.a < 0.01) {
+              discard;
+            }
+            return panelColor;
+          }`;
+        }
+      }
+
+      class HTMLPanelNode extends Node {
+        constructor(texture) {
+          super();
+          this.texture = texture;
+          this.selectable = true;
+        }
+
+        onRendererChanged(renderer) {
+          const stream = new PrimitiveStream();
+          stream.startGeometry();
+          stream.pushVertex(0, 0, 0, 0, 1);
+          stream.pushVertex(0, PANEL_HEIGHT, 0, 0, 0);
+          stream.pushVertex(PANEL_WIDTH, PANEL_HEIGHT, 0, 1, 0);
+          stream.pushVertex(PANEL_WIDTH, 0, 0, 1, 1);
+          stream.pushTriangle(0, 1, 2);
+          stream.pushTriangle(0, 2, 3);
+          stream.endGeometry();
+
+          const primitive = stream.finishPrimitive(renderer);
+          const material = new HTMLPanelMaterial(this.texture);
+          this.addRenderPrimitive(
+              renderer.createRenderPrimitive(primitive, material));
+        }
+      }
+
+      class CrumpleCardMaterial extends Material {
+        constructor(texture) {
+          super();
+          this.state.cullFace = false;
+          this.state.blend = true;
+          this.cardTexture = this.defineSampler('cardTexture');
+          this.cardTexture.texture = texture;
+          this.defineUniform('crumpleAmount', 0);
+        }
+
+        get materialName() {
+          return 'HTML_IN_CANVAS_CRUMPLE_CARD';
+        }
+
+        get vertexSource() {
+          return `
+          in vec3 POSITION;
+          in vec2 TEXCOORD_0;
+
+          uniform float crumpleAmount;
+
+          out vec2 vTexCoord;
+          out float vShade;
+
+          vec4 vertex_main(mat4 proj, mat4 view, mat4 model) {
+            float amount = crumpleAmount * crumpleAmount *
+                (3.0 - 2.0 * crumpleAmount);
+            vec2 cardSize = vec2(${CARD_WIDTH}.0, ${CARD_HEIGHT}.0);
+            vec2 surfaceCoord = POSITION.xy / cardSize;
+            vec2 centered = surfaceCoord - vec2(0.5);
+            float ridgeA = sin(surfaceCoord.x * 31.0 + surfaceCoord.y * 17.0);
+            float ridgeB = sin(surfaceCoord.y * 37.0 - surfaceCoord.x * 13.0);
+            float ridgeC = sin((surfaceCoord.x + surfaceCoord.y) * 61.0);
+            float angle = amount * (centered.y * 4.5 + ridgeA * 0.55);
+            mat2 twist = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
+            float compression = 0.17 + ridgeB * 0.035;
+            vec2 crumpled = twist * centered * compression;
+            crumpled += vec2(ridgeA, ridgeB) * 0.018;
+            vec2 deformed = mix(centered, crumpled, amount);
+            float radius = length(centered * vec2(1.0, 0.72));
+            float mound = max(0.0, 1.0 - radius * 1.8);
+            float z = ${CARD_WIDTH}.0 * amount *
+                (mound * 0.085 + ridgeA * 0.025 +
+                 ridgeB * 0.018 + ridgeC * 0.01);
+            vec2 cardPosition = (deformed + vec2(0.5)) * cardSize;
+
+            vTexCoord = TEXCOORD_0;
+            vShade = mix(1.0,
+                clamp(0.76 + mound * 0.18 + ridgeA * 0.16 +
+                      ridgeB * 0.1, 0.48, 1.12), amount);
+            return proj * view * model * vec4(cardPosition, z, 1.0);
+          }`;
+        }
+
+        get fragmentSource() {
+          return `
+          precision highp float;
+
+          uniform sampler2D cardTexture;
+          in vec2 vTexCoord;
+          in float vShade;
+
+          vec4 fragment_main() {
+            vec4 cardColor = texture(cardTexture, vTexCoord);
+            if (cardColor.a < 0.01) {
+              discard;
+            }
+            cardColor.rgb *= vShade;
+            return cardColor;
+          }`;
+        }
+      }
+
+      class CrumpleCardNode extends Node {
+        constructor(texture) {
+          super();
+          this.texture = texture;
+          this.selectable = true;
+          this._crumpleAmount = 0;
+          this._crumpleTarget = 0;
+          this._renderPrimitive = null;
+        }
+
+        set crumpled(value) {
+          this._crumpleTarget = value ? 1 : 0;
+        }
+
+        onRendererChanged(renderer) {
+          const columns = 28;
+          const rows = 18;
+          const stream = new PrimitiveStream();
+          stream.startGeometry();
+
+          for (let row = 0; row <= rows; row++) {
+            const v = row / rows;
+            for (let column = 0; column <= columns; column++) {
+              const u = column / columns;
+              stream.pushVertex(
+                  u * CARD_WIDTH, v * CARD_HEIGHT, 0, u, 1 - v);
+            }
+          }
+
+          for (let row = 0; row < rows; row++) {
+            for (let column = 0; column < columns; column++) {
+              const topLeft = row * (columns + 1) + column;
+              const topRight = topLeft + 1;
+              const bottomLeft = topLeft + columns + 1;
+              const bottomRight = bottomLeft + 1;
+              stream.pushTriangle(topLeft, bottomLeft, bottomRight);
+              stream.pushTriangle(topLeft, bottomRight, topRight);
+            }
+          }
+
+          stream.endGeometry();
+
+          const primitive = stream.finishPrimitive(renderer);
+          const material = new CrumpleCardMaterial(this.texture);
+          this._renderPrimitive =
+              renderer.createRenderPrimitive(primitive, material);
+          this._renderPrimitive.uniforms.crumpleAmount.value =
+              this._crumpleAmount;
+          this.addRenderPrimitive(this._renderPrimitive);
+        }
+
+        onUpdate(timestamp, frameDelta) {
+          if (!this._renderPrimitive ||
+              this._crumpleAmount === this._crumpleTarget) {
+            return;
+          }
+
+          const step = Math.max(0, frameDelta || 0) / CRUMPLE_DURATION_MS;
+          if (this._crumpleAmount < this._crumpleTarget) {
+            this._crumpleAmount = Math.min(
+                this._crumpleTarget, this._crumpleAmount + step);
+          } else {
+            this._crumpleAmount = Math.max(
+                this._crumpleTarget, this._crumpleAmount - step);
+          }
+
+          this._renderPrimitive.uniforms.crumpleAmount.value =
+              this._crumpleAmount;
+        }
+      }
+
+      const xrCanvas = document.getElementById('xr-canvas');
+      const xrPanel = document.getElementById('xr-control-panel');
+      const xrCrumpleCard = document.getElementById('xr-crumple-card');
+      const crumpleState = xrCrumpleCard.querySelector(
+          '[data-role="crumple-state"]');
+      const crumpleToggle = xrCrumpleCard.querySelector(
+          '[data-role="crumple-toggle"]');
+      const previewCanvas = document.getElementById('preview-canvas');
+      const previewContext = previewCanvas.getContext('2d');
+      const supportStatus = document.getElementById('support-status');
+
+      const previewPanel = xrPanel.cloneNode(true);
+      previewPanel.id = 'preview-control-panel';
+      previewCanvas.appendChild(previewPanel);
+
+      const panels = [xrPanel, previewPanel].map((root) => ({
+        root,
+        entryCount: root.querySelector('[data-role="entry-count"]'),
+        eventLog: root.querySelector('[data-role="event-log"]'),
+        notifications: root.querySelector('[data-role="notifications"]'),
+        notificationLabel: root.querySelector('[data-role="notification-label"]'),
+        panelMessage: root.querySelector('[data-role="panel-message"]'),
+        addEntry: root.querySelector('[data-role="add-entry"]'),
+      }));
+
+      let xrButton = null;
+      let xrSession = null;
+      let xrRefSpace = null;
+      let entriesAdded = 0;
+      let cardIsCrumpled = false;
+
+      const gl = xrCanvas.getContext('webgl2', {
+        alpha: false,
+        antialias: true,
+        xrCompatible: true,
+      });
+
+      const panelScale = PANEL_WORLD_WIDTH / PANEL_WIDTH;
+      const panelMatrix = new Float32Array([
+        panelScale, 0, 0, 0,
+        0, -panelScale, 0, 0,
+        0, 0, panelScale, 0,
+        PANEL_CENTER_X - PANEL_WORLD_WIDTH / 2,
+        PANEL_HEIGHT * panelScale / 2,
+        PANEL_DISTANCE,
+        1,
+      ]);
+      const cardScale = CARD_WORLD_WIDTH / CARD_WIDTH;
+      const cardMatrix = new Float32Array([
+        cardScale, 0, 0, 0,
+        0, -cardScale, 0, 0,
+        0, 0, cardScale, 0,
+        CARD_CENTER_X - CARD_WORLD_WIDTH / 2,
+        CARD_HEIGHT * cardScale / 2,
+        CARD_DISTANCE,
+        1,
+      ]);
+
+      // Each model matrix also defines the placement of its DOM hit-test root.
+      xrPanel.style.transform = `matrix3d(${Array.from(panelMatrix).join(',')})`;
+      xrCrumpleCard.style.transform =
+          `matrix3d(${Array.from(cardMatrix).join(',')})`;
+
+      let renderer = null;
+      const scene = new Scene();
+      scene.enableStats(false);
+      scene.addNode(new SkyboxNode({
+        url: 'media/textures/milky-way-2k.png',
+      }));
+
+      let panelTexture = null;
+      let cardTexture = null;
+      let panelNode = null;
+      let crumpleCardNode = null;
+      let panelTextureDirty = true;
+      let cardTextureDirty = true;
+      let lastCardAnimationPaint = 0;
+
+      function createElementTexture() {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return texture;
+      }
+
+      function initGLResources() {
+        panelTexture = createElementTexture();
+        cardTexture = createElementTexture();
+        panelTextureDirty = true;
+        cardTextureDirty = true;
+
+        renderer = new Renderer(gl);
+        renderer.addExternalTexture(PANEL_TEXTURE_KEY, panelTexture, false);
+        renderer.addExternalTexture(CARD_TEXTURE_KEY, cardTexture, false);
+
+        panelNode = new HTMLPanelNode(
+            new ExternalTexture(PANEL_TEXTURE_KEY));
+        panelNode.matrix = panelMatrix;
+        panelNode.visible = false;
+        scene.addNode(panelNode);
+
+        crumpleCardNode = new CrumpleCardNode(
+            new ExternalTexture(CARD_TEXTURE_KEY));
+        crumpleCardNode.matrix = cardMatrix;
+        crumpleCardNode.crumpled = cardIsCrumpled;
+        crumpleCardNode.visible = false;
+        scene.addNode(crumpleCardNode);
+        scene.setRenderer(renderer);
+      }
+
+      function uploadElementTexture(
+          texture, node, element, width, height, label) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        try {
+          gl.texElementImage2D(gl.TEXTURE_2D, gl.RGBA8, element, {
+            width,
+            height,
+          });
+        } catch (error) {
+          // Keep compatibility with the earlier developer-trial signature.
+          try {
+            gl.texElementImage2D(
+                gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA,
+                gl.UNSIGNED_BYTE, element);
+          } catch (legacyError) {
+            node.visible = false;
+            supportStatus.textContent =
+                `Unable to upload the HTML ${label}: ${legacyError.message}`;
+            console.error(legacyError);
+            return;
+          }
+        }
+
+        node.visible = true;
+      }
+
+      function uploadHTMLTextures() {
+        if (!gl || typeof gl.texElementImage2D !== 'function') {
+          return;
+        }
+
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        if (panelTextureDirty) {
+          panelTextureDirty = false;
+          uploadElementTexture(
+              panelTexture, panelNode, xrPanel,
+              PANEL_TEXTURE_WIDTH, PANEL_TEXTURE_HEIGHT, 'panel');
+        }
+        if (cardTextureDirty) {
+          cardTextureDirty = false;
+          uploadElementTexture(
+              cardTexture, crumpleCardNode, xrCrumpleCard,
+              CARD_TEXTURE_WIDTH, CARD_TEXTURE_HEIGHT, 'card');
+        }
+      }
+
+      function drawPreview() {
+        previewContext.reset();
+        const transform = previewContext.drawElementImage(previewPanel, 0, 0);
+        previewPanel.style.transform = transform.toString();
+      }
+
+      function requestHTMLPaint() {
+        panelTextureDirty = true;
+        cardTextureDirty = true;
+        if (typeof xrCanvas.requestPaint === 'function') {
+          xrCanvas.requestPaint();
+        }
+        if (typeof previewCanvas.requestPaint === 'function') {
+          previewCanvas.requestPaint();
+        }
+      }
+
+      function requestCardAnimationPaint() {
+        cardTextureDirty = true;
+        if (typeof xrCanvas.requestPaint === 'function') {
+          xrCanvas.requestPaint();
+        }
+      }
+
+      function addLogEntry(text) {
+        for (const panelView of panels) {
+          const item = document.createElement('li');
+          item.textContent = text;
+          panelView.eventLog.prepend(item);
+
+          while (panelView.eventLog.children.length > 10) {
+            panelView.eventLog.lastElementChild.remove();
+          }
+
+          panelView.eventLog.scrollTop = 0;
+        }
+        requestHTMLPaint();
+      }
+
+      for (const panelView of panels) {
+        panelView.addEntry.addEventListener('click', () => {
+          entriesAdded++;
+          for (const view of panels) {
+            view.entryCount.textContent = entriesAdded;
+            view.panelMessage.textContent = `Entry ${entriesAdded} added`;
+          }
+          addLogEntry(`Manual entry ${entriesAdded}`);
+        });
+
+        panelView.notifications.addEventListener('change', () => {
+          const checked = panelView.notifications.checked;
+          const state = checked ? 'enabled' : 'disabled';
+          for (const view of panels) {
+            view.notifications.checked = checked;
+            view.notificationLabel.textContent = `Notifications ${state}`;
+            view.panelMessage.textContent = `Notifications ${state}`;
+          }
+          addLogEntry(`Notifications ${state}`);
+        });
+
+        panelView.eventLog.addEventListener('scroll', () => {
+          for (const view of panels) {
+            if (view !== panelView &&
+                view.eventLog.scrollTop !== panelView.eventLog.scrollTop) {
+              view.eventLog.scrollTop = panelView.eventLog.scrollTop;
+            }
+          }
+          requestHTMLPaint();
+        }, {passive: true});
+      }
+
+      function setCardCrumpled(value) {
+        cardIsCrumpled = value;
+        crumpleState.textContent = value ? 'Crumpled' : 'Flat';
+        crumpleToggle.textContent = value ? 'Restore' : 'Crumple';
+        crumpleToggle.setAttribute('aria-pressed', value ? 'true' : 'false');
+        if (crumpleCardNode) {
+          crumpleCardNode.crumpled = value;
+        }
+        addLogEntry(value ? 'Field note crumpled' : 'Field note restored');
+      }
+
+      xrCrumpleCard.addEventListener('click', () => {
+        setCardCrumpled(!cardIsCrumpled);
+      });
+
+      function initXR() {
+        xrButton = new WebXRButton({
+          onRequestSession,
+          onEndSession,
+          textEnterXRTitle: 'Enter XR',
+          textExitXRTitle: 'Exit XR',
+          textXRNotFoundTitle: 'XR unavailable',
+        });
+        document.querySelector('header').appendChild(xrButton.domElement);
+
+        const canvas2DSupported =
+            previewContext !== null &&
+            typeof previewContext.drawElementImage === 'function' &&
+            typeof previewCanvas.requestPaint === 'function';
+
+        if (!canvas2DSupported) {
+          supportStatus.textContent =
+              'HTML-in-Canvas is unavailable. Enable the canvas-draw-element developer feature.';
+          return;
+        }
+
+        previewCanvas.onpaint = drawPreview;
+        previewCanvas.requestPaint();
+
+        if (!gl) {
+          supportStatus.textContent = 'WebGL 2 is unavailable.';
+          return;
+        }
+
+        initGLResources();
+
+        const htmlInCanvasSupported =
+            typeof gl.texElementImage2D === 'function' &&
+            typeof xrCanvas.requestPaint === 'function';
+
+        if (!htmlInCanvasSupported) {
+          supportStatus.textContent =
+              'HTML-in-Canvas is unavailable. Enable the canvas-draw-element developer feature.';
+          return;
+        }
+
+        xrCanvas.onpaint = uploadHTMLTextures;
+        requestHTMLPaint();
+
+        if (!navigator.xr) {
+          supportStatus.textContent = 'WebXR is unavailable.';
+          return;
+        }
+
+        navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+          xrButton.enabled = supported;
+          supportStatus.textContent = supported ?
+              'HTML-in-Canvas is ready.' :
+              'No immersive VR device is available.';
+        });
+      }
+
+      function onRequestSession() {
+        return navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['html-in-canvas'],
+        }).then(onSessionStarted).catch((error) => {
+          supportStatus.textContent =
+              `Unable to start an HTML-in-Canvas session: ${error.message}`;
+          throw error;
+        });
+      }
+
+      function onSessionStarted(session) {
+        xrSession = session;
+        lastCardAnimationPaint = 0;
+        xrButton.setSession(session);
+        session.addEventListener('end', onSessionEnded);
+        scene.inputRenderer.useProfileControllerMeshes(session);
+
+        session.updateRenderState({
+          baseLayer: new XRWebGLLayer(session, gl),
+        });
+
+        requestHTMLPaint();
+
+        return session.requestReferenceSpace('local').then((refSpace) => {
+          xrRefSpace = refSpace;
+          session.requestAnimationFrame(onXRFrame);
+        });
+      }
+
+      function onEndSession(session) {
+        return session.end();
+      }
+
+      function onSessionEnded() {
+        xrButton.setSession(null);
+        xrSession = null;
+        xrRefSpace = null;
+      }
+
+      function onXRFrame(time, frame) {
+        const session = frame.session;
+        scene.startFrame();
+        session.requestAnimationFrame(onXRFrame);
+
+        if (time - lastCardAnimationPaint >=
+            CARD_ANIMATION_FRAME_INTERVAL_MS) {
+          lastCardAnimationPaint = time;
+          requestCardAnimationPaint();
+        }
+
+        const pose = frame.getViewerPose(xrRefSpace);
+        if (pose) {
+          gl.clearColor(0.045, 0.055, 0.065, 1.0);
+          scene.updateInputSources(frame, xrRefSpace);
+          scene.drawXRFrame(frame, pose);
+        }
+
+        scene.endFrame();
+      }
+
+      initXR();
+    </script>
+  </body>
+</html>
