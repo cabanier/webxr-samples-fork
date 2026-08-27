@@ -57,18 +57,21 @@ struct VertexInput {
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
+  // Work around a browser multiview bug when position is the only output.
+  @location(0) color: vec4f,
 };
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
   output.position = frame.projectionMatrix * frame.viewMatrix * model.modelMatrix * vec4f(input.position, 0.0, 1.0);
+  output.color = vec4f(0.0, 1.0, 0.0, 1.0);
   return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-  return vec4f(0.0, 1.0, 0.0, 1.0);
+  return input.color;
 }
 `;
 
