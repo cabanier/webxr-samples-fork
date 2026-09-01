@@ -1179,12 +1179,15 @@ export class Renderer {
   }
 
   addExternalTexture(key, texture, isArray) {
-    if (this._textureCache[key] === undefined) {
-      this._textureCache[key] = {};
+    let renderTexture = this._textureCache[key];
+    if (renderTexture === undefined) {
+      renderTexture = new RenderTexture(texture);
+      this._textureCache[key] = renderTexture;
     }
-    this._textureCache[key]._complete = true;
-    this._textureCache[key]._texture = texture;
-    this._textureCache[key]._isArray = isArray;
+    renderTexture._complete = true;
+    renderTexture._texture = texture;
+    renderTexture._isArray = isArray;
+    renderTexture._isExternalTexture = true;
   }
 
   _getRenderTexture(texture) {

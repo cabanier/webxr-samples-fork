@@ -26,11 +26,11 @@ SOFTWARE.
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png">
-    <link rel="stylesheet" href="css/common.css">
+    <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="96x96" href="../favicon-96x96.png">
+    <link rel="stylesheet" href="../css/common.css">
 
-    <title>HTML-in-Canvas</title>
+    <title>HTML-in-Canvas Projection Layer</title>
     <style>
       #support-status {
         margin: 0.75em 0 0;
@@ -47,7 +47,8 @@ SOFTWARE.
         text-align: center;
       }
 
-      #preview-canvas {
+      #preview-canvas,
+      #iframe-preview-canvas {
         position: relative;
         left: auto;
         top: auto;
@@ -55,13 +56,21 @@ SOFTWARE.
         bottom: auto;
         z-index: 1;
         display: block;
-        width: min(560px, calc(100% - 24px));
         height: auto;
-        aspect-ratio: 4 / 3;
         margin: 16px auto;
         border: 1px solid #aeb5bd;
         background: #ffffff;
         touch-action: auto;
+      }
+
+      #preview-canvas {
+        width: min(560px, calc(100% - 24px));
+        aspect-ratio: 4 / 3;
+      }
+
+      #iframe-preview-canvas {
+        width: min(480px, calc(100% - 24px));
+        aspect-ratio: 8 / 5;
       }
 
       .control-panel {
@@ -399,6 +408,18 @@ SOFTWARE.
         background: #982f27;
       }
 
+      .iframe-panel {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 480px;
+        height: 300px;
+        box-sizing: border-box;
+        border: 0;
+        background: #ffffff;
+        transform-origin: 0 0;
+      }
+
       @keyframes signal-rise {
         from {
           opacity: 0.58;
@@ -430,11 +451,11 @@ SOFTWARE.
   <body>
     <header>
       <details open>
-        <summary>HTML-in-Canvas</summary>
+        <summary>HTML-in-Canvas Projection Layer</summary>
         <p>
-          This sample renders interactive canvas fallback content into an
-          immersive WebXR scene. Controller input is routed to the HTML button,
-          checkbox, and scroller by the user agent.
+          This sample renders interactive canvas fallback content, including a
+          same-origin iframe, into an XRProjectionLayer. Controller input is
+          routed to the HTML controls by the user agent.
           <a class="back" href="./">Back</a>
         </p>
         <p id="support-status" role="status">Checking browser support...</p>
@@ -444,6 +465,13 @@ SOFTWARE.
     <main class="preview">
       <p>The same controls are rendered below with Canvas 2D.</p>
       <canvas id="preview-canvas" width="560" height="420" layoutsubtree="true"></canvas>
+      <p>The same-origin iframe UI is also rendered with Canvas 2D.</p>
+      <canvas id="iframe-preview-canvas" width="480" height="300"
+          layoutsubtree="true">
+        <iframe id="preview-iframe-panel" class="iframe-panel" drawable
+            src="html-in-canvas-iframe-ui.html"
+            title="Same-origin task controls preview"></iframe>
+      </canvas>
     </main>
 
     <canvas id="xr-canvas" width="560" height="420" layoutsubtree="true">
@@ -515,17 +543,21 @@ SOFTWARE.
           <button class="crumple-toggle" data-role="crumple-toggle" type="button" aria-pressed="false">Crumple</button>
         </div>
       </article>
+
+      <iframe id="xr-iframe-panel" class="iframe-panel" drawable
+          src="html-in-canvas-iframe-ui.html"
+          title="Same-origin task controls"></iframe>
     </canvas>
 
     <script type="module">
-      import {WebXRButton} from './js/util/webxr-button.js';
-      import {Material} from './js/render/core/material.js';
-      import {Node} from './js/render/core/node.js';
-      import {Renderer} from './js/render/core/renderer.js';
-      import {ExternalTexture} from './js/render/core/texture.js';
-      import {PrimitiveStream} from './js/render/geometry/primitive-stream.js';
-      import {SkyboxNode} from './js/render/nodes/skybox.js';
-      import {Scene} from './js/render/scenes/scene.js';
+      import {WebXRButton} from '../js/util/webxr-button.js';
+      import {Material} from '../js/render/core/material.js';
+      import {Node} from '../js/render/core/node.js';
+      import {Renderer} from '../js/render/core/renderer.js';
+      import {ExternalTexture} from '../js/render/core/texture.js';
+      import {PrimitiveStream} from '../js/render/geometry/primitive-stream.js';
+      import {SkyboxNode} from '../js/render/nodes/skybox.js';
+      import {Scene} from '../js/render/scenes/scene.js';
 
       const PANEL_WIDTH = 560;
       const PANEL_HEIGHT = 420;
@@ -545,6 +577,16 @@ SOFTWARE.
       const CARD_CENTER_X = 0.66;
       const CARD_DISTANCE = -1.58;
       const CARD_TEXTURE_KEY = 'html-in-canvas-crumple-card';
+      const IFRAME_WIDTH = 480;
+      const IFRAME_HEIGHT = 300;
+      const IFRAME_TEXTURE_SCALE = 2;
+      const IFRAME_TEXTURE_WIDTH = IFRAME_WIDTH * IFRAME_TEXTURE_SCALE;
+      const IFRAME_TEXTURE_HEIGHT = IFRAME_HEIGHT * IFRAME_TEXTURE_SCALE;
+      const IFRAME_WORLD_WIDTH = 0.82;
+      const IFRAME_CENTER_X = 0.64;
+      const IFRAME_CENTER_Y = 0.62;
+      const IFRAME_DISTANCE = -1.6;
+      const IFRAME_TEXTURE_KEY = 'html-in-canvas-iframe';
       const CRUMPLE_DURATION_MS = 900;
       const CARD_ANIMATION_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -592,9 +634,11 @@ SOFTWARE.
       }
 
       class HTMLPanelNode extends Node {
-        constructor(texture) {
+        constructor(texture, width = PANEL_WIDTH, height = PANEL_HEIGHT) {
           super();
           this.texture = texture;
+          this.width = width;
+          this.height = height;
           this.selectable = true;
         }
 
@@ -602,9 +646,9 @@ SOFTWARE.
           const stream = new PrimitiveStream();
           stream.startGeometry();
           stream.pushVertex(0, 0, 0, 0, 1);
-          stream.pushVertex(0, PANEL_HEIGHT, 0, 0, 0);
-          stream.pushVertex(PANEL_WIDTH, PANEL_HEIGHT, 0, 1, 0);
-          stream.pushVertex(PANEL_WIDTH, 0, 0, 1, 1);
+          stream.pushVertex(0, this.height, 0, 0, 0);
+          stream.pushVertex(this.width, this.height, 0, 1, 0);
+          stream.pushVertex(this.width, 0, 0, 1, 1);
           stream.pushTriangle(0, 1, 2);
           stream.pushTriangle(0, 2, 3);
           stream.endGeometry();
@@ -763,12 +807,18 @@ SOFTWARE.
       const xrCanvas = document.getElementById('xr-canvas');
       const xrPanel = document.getElementById('xr-control-panel');
       const xrCrumpleCard = document.getElementById('xr-crumple-card');
+      const xrIframePanel = document.getElementById('xr-iframe-panel');
       const crumpleState = xrCrumpleCard.querySelector(
           '[data-role="crumple-state"]');
       const crumpleToggle = xrCrumpleCard.querySelector(
           '[data-role="crumple-toggle"]');
       const previewCanvas = document.getElementById('preview-canvas');
       const previewContext = previewCanvas.getContext('2d');
+      const iframePreviewCanvas =
+          document.getElementById('iframe-preview-canvas');
+      const iframePreviewContext = iframePreviewCanvas.getContext('2d');
+      const previewIframePanel =
+          document.getElementById('preview-iframe-panel');
       const supportStatus = document.getElementById('support-status');
 
       const previewPanel = xrPanel.cloneNode(true);
@@ -788,6 +838,7 @@ SOFTWARE.
       let xrButton = null;
       let xrSession = null;
       let xrRefSpace = null;
+      let projectionLayer = null;
       let entriesAdded = 0;
       let cardIsCrumpled = false;
 
@@ -817,25 +868,43 @@ SOFTWARE.
         CARD_DISTANCE,
         1,
       ]);
+      const iframeScale = IFRAME_WORLD_WIDTH / IFRAME_WIDTH;
+      const iframeMatrix = new Float32Array([
+        iframeScale, 0, 0, 0,
+        0, -iframeScale, 0, 0,
+        0, 0, iframeScale, 0,
+        IFRAME_CENTER_X - IFRAME_WORLD_WIDTH / 2,
+        IFRAME_CENTER_Y + IFRAME_HEIGHT * iframeScale / 2,
+        IFRAME_DISTANCE,
+        1,
+      ]);
 
       // Each model matrix also defines the placement of its DOM hit-test root.
       xrPanel.style.transform = `matrix3d(${Array.from(panelMatrix).join(',')})`;
       xrCrumpleCard.style.transform =
           `matrix3d(${Array.from(cardMatrix).join(',')})`;
+      xrIframePanel.style.transform =
+          `matrix3d(${Array.from(iframeMatrix).join(',')})`;
 
       let renderer = null;
       const scene = new Scene();
       scene.enableStats(false);
       scene.addNode(new SkyboxNode({
-        url: 'media/textures/milky-way-2k.png',
+        url: '../media/textures/milky-way-2k.png',
       }));
 
       let panelTexture = null;
       let cardTexture = null;
+      let iframeTexture = null;
       let panelNode = null;
       let crumpleCardNode = null;
+      let iframeNode = null;
       let panelTextureDirty = true;
       let cardTextureDirty = true;
+      let iframeTextureDirty = true;
+      let iframeLoaded = xrIframePanel.contentDocument?.readyState === 'complete';
+      let iframePreviewLoaded =
+          previewIframePanel.contentDocument?.readyState === 'complete';
       let lastCardAnimationPaint = 0;
 
       function createElementTexture() {
@@ -851,12 +920,16 @@ SOFTWARE.
       function initGLResources() {
         panelTexture = createElementTexture();
         cardTexture = createElementTexture();
+        iframeTexture = createElementTexture();
         panelTextureDirty = true;
         cardTextureDirty = true;
+        iframeTextureDirty = true;
 
         renderer = new Renderer(gl);
         renderer.addExternalTexture(PANEL_TEXTURE_KEY, panelTexture, false);
         renderer.addExternalTexture(CARD_TEXTURE_KEY, cardTexture, false);
+        renderer.addExternalTexture(
+            IFRAME_TEXTURE_KEY, iframeTexture, false);
 
         panelNode = new HTMLPanelNode(
             new ExternalTexture(PANEL_TEXTURE_KEY));
@@ -870,6 +943,13 @@ SOFTWARE.
         crumpleCardNode.crumpled = cardIsCrumpled;
         crumpleCardNode.visible = false;
         scene.addNode(crumpleCardNode);
+
+        iframeNode = new HTMLPanelNode(
+            new ExternalTexture(IFRAME_TEXTURE_KEY),
+            IFRAME_WIDTH, IFRAME_HEIGHT);
+        iframeNode.matrix = iframeMatrix;
+        iframeNode.visible = false;
+        scene.addNode(iframeNode);
         scene.setRenderer(renderer);
       }
 
@@ -905,6 +985,9 @@ SOFTWARE.
             if (xrCrumpleCard.contains(element)) {
               cardTextureDirty = true;
             }
+            if (xrIframePanel.contains(element)) {
+              iframeTextureDirty = true;
+            }
           }
         }
 
@@ -921,6 +1004,12 @@ SOFTWARE.
               cardTexture, crumpleCardNode, xrCrumpleCard,
               CARD_TEXTURE_WIDTH, CARD_TEXTURE_HEIGHT, 'card');
         }
+        if (iframeTextureDirty && iframeLoaded) {
+          iframeTextureDirty = false;
+          uploadElementTexture(
+              iframeTexture, iframeNode, xrIframePanel,
+              IFRAME_TEXTURE_WIDTH, IFRAME_TEXTURE_HEIGHT, 'iframe UI');
+        }
       }
 
       function drawPreview() {
@@ -929,14 +1018,41 @@ SOFTWARE.
         previewPanel.style.transform = transform.toString();
       }
 
+      function drawIframePreview() {
+        if (!iframePreviewLoaded) {
+          return;
+        }
+        iframePreviewContext.reset();
+        const transform =
+            iframePreviewContext.drawElementImage(previewIframePanel, 0, 0);
+        previewIframePanel.style.transform = transform.toString();
+      }
+
       function requestHTMLPaint() {
         panelTextureDirty = true;
         cardTextureDirty = true;
+        iframeTextureDirty = true;
         if (typeof xrCanvas.requestPaint === 'function') {
           xrCanvas.requestPaint();
         }
         if (typeof previewCanvas.requestPaint === 'function') {
           previewCanvas.requestPaint();
+        }
+        if (typeof iframePreviewCanvas.requestPaint === 'function') {
+          iframePreviewCanvas.requestPaint();
+        }
+      }
+
+      function requestIframePaint() {
+        iframeTextureDirty = true;
+        if (typeof xrCanvas.requestPaint === 'function') {
+          xrCanvas.requestPaint();
+        }
+      }
+
+      function requestIframePreviewPaint() {
+        if (typeof iframePreviewCanvas.requestPaint === 'function') {
+          iframePreviewCanvas.requestPaint();
         }
       }
 
@@ -1009,6 +1125,28 @@ SOFTWARE.
         setCardCrumpled(!cardIsCrumpled);
       });
 
+      xrIframePanel.addEventListener('load', () => {
+        iframeLoaded = true;
+        requestIframePaint();
+      });
+
+      previewIframePanel.addEventListener('load', () => {
+        iframePreviewLoaded = true;
+        requestIframePreviewPaint();
+      });
+
+      window.addEventListener('message', (event) => {
+        if (event.origin !== window.location.origin ||
+            event.data?.type !== 'html-in-canvas-ui-changed') {
+          return;
+        }
+        if (event.source === xrIframePanel.contentWindow) {
+          requestIframePaint();
+        } else if (event.source === previewIframePanel.contentWindow) {
+          requestIframePreviewPaint();
+        }
+      });
+
       function initXR() {
         xrButton = new WebXRButton({
           onRequestSession,
@@ -1021,8 +1159,11 @@ SOFTWARE.
 
         const canvas2DSupported =
             previewContext !== null &&
+            iframePreviewContext !== null &&
             typeof previewContext.drawElementImage === 'function' &&
-            typeof previewCanvas.requestPaint === 'function';
+            typeof iframePreviewContext.drawElementImage === 'function' &&
+            typeof previewCanvas.requestPaint === 'function' &&
+            typeof iframePreviewCanvas.requestPaint === 'function';
 
         if (!canvas2DSupported) {
           supportStatus.textContent =
@@ -1032,6 +1173,8 @@ SOFTWARE.
 
         previewCanvas.onpaint = drawPreview;
         previewCanvas.requestPaint();
+        iframePreviewCanvas.onpaint = drawIframePreview;
+        iframePreviewCanvas.requestPaint();
 
         if (!gl) {
           supportStatus.textContent = 'WebGL 2 is unavailable.';
@@ -1058,10 +1201,15 @@ SOFTWARE.
           return;
         }
 
+        if (!('XRWebGLBinding' in window)) {
+          supportStatus.textContent = 'WebXR Layers is unavailable.';
+          return;
+        }
+
         navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
           xrButton.enabled = supported;
           supportStatus.textContent = supported ?
-              'HTML-in-Canvas is ready.' :
+              'HTML-in-Canvas projection layer is ready.' :
               'No immersive VR device is available.';
         });
       }
@@ -1071,7 +1219,7 @@ SOFTWARE.
           optionalFeatures: ['html-in-canvas'],
         }).then(onSessionStarted).catch((error) => {
           supportStatus.textContent =
-              `Unable to start an HTML-in-Canvas session: ${error.message}`;
+              `Unable to start the projection-layer session: ${error.message}`;
           throw error;
         });
       }
@@ -1083,14 +1231,16 @@ SOFTWARE.
         session.addEventListener('end', onSessionEnded);
         scene.inputRenderer.useProfileControllerMeshes(session);
 
-        session.updateRenderState({
-          baseLayer: new XRWebGLLayer(session, gl),
-        });
-
-        requestHTMLPaint();
-
         return session.requestReferenceSpace('local').then((refSpace) => {
           xrRefSpace = refSpace;
+          const binding = new XRWebGLBinding(session, gl);
+          projectionLayer = binding.createProjectionLayer({
+            textureType: 'texture',
+            colorFormat: gl.RGBA8,
+            depthFormat: gl.DEPTH_COMPONENT24,
+          });
+          session.updateRenderState({layers: [projectionLayer]});
+          requestHTMLPaint();
           session.requestAnimationFrame(onXRFrame);
         });
       }
@@ -1103,6 +1253,7 @@ SOFTWARE.
         xrButton.setSession(null);
         xrSession = null;
         xrRefSpace = null;
+        projectionLayer = null;
       }
 
       function onXRFrame(time, frame) {
