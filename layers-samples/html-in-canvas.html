@@ -32,9 +32,18 @@ SOFTWARE.
 
     <title>HTML-in-Canvas Projection Layer</title>
     <style>
+      #api-version,
       #support-status {
-        margin: 0.75em 0 0;
         color: #3d4650;
+      }
+
+      #api-version {
+        margin: 0.75em 0 0;
+        font-weight: 600;
+      }
+
+      #support-status {
+        margin: 0.25em 0 0;
       }
 
       #xr-canvas {
@@ -47,8 +56,7 @@ SOFTWARE.
         text-align: center;
       }
 
-      #preview-canvas,
-      #iframe-preview-canvas {
+      #preview-canvas {
         position: relative;
         left: auto;
         top: auto;
@@ -61,16 +69,8 @@ SOFTWARE.
         border: 1px solid #aeb5bd;
         background: #ffffff;
         touch-action: auto;
-      }
-
-      #preview-canvas {
-        width: min(560px, calc(100% - 24px));
-        aspect-ratio: 4 / 3;
-      }
-
-      #iframe-preview-canvas {
-        width: min(480px, calc(100% - 24px));
-        aspect-ratio: 8 / 5;
+        width: min(360px, calc(100% - 24px));
+        aspect-ratio: 6 / 5;
       }
 
       .control-panel {
@@ -458,23 +458,47 @@ SOFTWARE.
           routed to the HTML controls by the user agent.
           <a class="back" href="./">Back</a>
         </p>
+        <p id="api-version">Detecting HTML-in-Canvas API version...</p>
         <p id="support-status" role="status">Checking browser support...</p>
       </details>
     </header>
 
     <main class="preview">
-      <p>The same controls are rendered below with Canvas 2D.</p>
-      <canvas id="preview-canvas" width="560" height="420" layoutsubtree="true"></canvas>
-      <p>The same-origin iframe UI is also rendered with Canvas 2D.</p>
-      <canvas id="iframe-preview-canvas" width="480" height="300"
-          layoutsubtree="true">
-        <iframe id="preview-iframe-panel" class="iframe-panel" drawable
-            src="html-in-canvas-iframe-ui.html"
-            title="Same-origin task controls preview"></iframe>
+      <p>The crumple UI is rendered below with Canvas 2D.</p>
+      <canvas id="preview-canvas" width="360" height="300"
+          content="drawable" layoutsubtree="true">
+        <article id="preview-crumple-card" class="crumple-card" drawable
+            aria-label="Field note">
+          <div class="crumple-card-header">
+            <span class="crumple-kicker">Interaction sample</span>
+            <span class="crumple-state" data-role="crumple-state">Flat</span>
+          </div>
+          <div class="crumple-card-body">
+            <h2>Field note 07</h2>
+            <p>The input surface is synchronized with the rendered geometry.</p>
+            <div class="crumple-signal" aria-hidden="true">
+              <span class="crumple-signal-label">Live signal</span>
+              <span class="crumple-signal-bars">
+                <span class="crumple-signal-bar"></span>
+                <span class="crumple-signal-bar"></span>
+                <span class="crumple-signal-bar"></span>
+                <span class="crumple-signal-bar"></span>
+                <span class="crumple-signal-bar"></span>
+              </span>
+            </div>
+            <div class="crumple-track" aria-hidden="true"></div>
+          </div>
+          <div class="crumple-card-footer">
+            <span class="crumple-code">HTML</span>
+            <button class="crumple-toggle" data-role="crumple-toggle"
+                type="button" aria-pressed="false">Crumple</button>
+          </div>
+        </article>
       </canvas>
     </main>
 
-    <canvas id="xr-canvas" width="560" height="420" layoutsubtree="true">
+    <canvas id="xr-canvas" width="560" height="420"
+        content="drawable" layoutsubtree="true">
       <section id="xr-control-panel" class="control-panel" drawable
           aria-label="Operations panel">
         <div class="panel-header">
@@ -808,24 +832,16 @@ SOFTWARE.
       const xrPanel = document.getElementById('xr-control-panel');
       const xrCrumpleCard = document.getElementById('xr-crumple-card');
       const xrIframePanel = document.getElementById('xr-iframe-panel');
-      const crumpleState = xrCrumpleCard.querySelector(
-          '[data-role="crumple-state"]');
-      const crumpleToggle = xrCrumpleCard.querySelector(
-          '[data-role="crumple-toggle"]');
       const previewCanvas = document.getElementById('preview-canvas');
-      const previewContext = previewCanvas.getContext('2d');
-      const iframePreviewCanvas =
-          document.getElementById('iframe-preview-canvas');
-      const iframePreviewContext = iframePreviewCanvas.getContext('2d');
-      const previewIframePanel =
-          document.getElementById('preview-iframe-panel');
+      const apiVersionStatus = document.getElementById('api-version');
       const supportStatus = document.getElementById('support-status');
+      const usesContentAttribute = 'content' in HTMLCanvasElement.prototype;
 
-      const previewPanel = xrPanel.cloneNode(true);
-      previewPanel.id = 'preview-control-panel';
-      previewCanvas.appendChild(previewPanel);
+      const previewContext = previewCanvas.getContext('2d');
+      const previewCrumpleCard =
+          document.getElementById('preview-crumple-card');
 
-      const panels = [xrPanel, previewPanel].map((root) => ({
+      const panels = [xrPanel].map((root) => ({
         root,
         entryCount: root.querySelector('[data-role="entry-count"]'),
         eventLog: root.querySelector('[data-role="event-log"]'),
@@ -833,6 +849,11 @@ SOFTWARE.
         notificationLabel: root.querySelector('[data-role="notification-label"]'),
         panelMessage: root.querySelector('[data-role="panel-message"]'),
         addEntry: root.querySelector('[data-role="add-entry"]'),
+      }));
+      const crumpleCards = [xrCrumpleCard, previewCrumpleCard].map((root) => ({
+        root,
+        state: root.querySelector('[data-role="crumple-state"]'),
+        toggle: root.querySelector('[data-role="crumple-toggle"]'),
       }));
 
       let xrButton = null;
@@ -847,6 +868,42 @@ SOFTWARE.
         antialias: true,
         xrCompatible: true,
       });
+      const usesSubImageAPI =
+          typeof gl?.texElementSubImage2D === 'function';
+      const usesLegacyImageAPI =
+          !usesSubImageAPI &&
+          typeof gl?.texElementImage2D === 'function' &&
+          gl.texElementImage2D.length === 3;
+
+      function getBrowserVersionLabel() {
+        const brands = navigator.userAgentData?.brands;
+        const brand = brands?.find((entry) =>
+          entry.brand === 'Google Chrome' || entry.brand === 'Chromium');
+        if (brand) {
+          return `${brand.brand} ${brand.version}`;
+        }
+
+        const match = navigator.userAgent.match(/(?:Chrome|CriOS)\/(\d+)/);
+        return match ? `Chrome ${match[1]}` : 'Unknown browser version';
+      }
+
+      const browserVersionLabel = getBrowserVersionLabel();
+      if (usesSubImageAPI && usesContentAttribute) {
+        apiVersionStatus.textContent =
+            `${browserVersionLabel}: Chrome 155+ HTML-in-Canvas API active ` +
+            '(texElementSubImage2D).';
+      } else if (usesSubImageAPI) {
+        apiVersionStatus.textContent =
+            `${browserVersionLabel}: transitional HTML-in-Canvas API active ` +
+            '(texElementSubImage2D with layoutsubtree).';
+      } else if (usesLegacyImageAPI) {
+        apiVersionStatus.textContent =
+            `${browserVersionLabel}: Chrome 150–154 HTML-in-Canvas API active ` +
+            '(texElementImage2D).';
+      } else {
+        apiVersionStatus.textContent =
+            `${browserVersionLabel}: HTML-in-Canvas WebGL API unavailable.`;
+      }
 
       const panelScale = PANEL_WORLD_WIDTH / PANEL_WIDTH;
       const panelMatrix = new Float32Array([
@@ -880,11 +937,13 @@ SOFTWARE.
       ]);
 
       // Each model matrix also defines the placement of its DOM hit-test root.
-      xrPanel.style.transform = `matrix3d(${Array.from(panelMatrix).join(',')})`;
-      xrCrumpleCard.style.transform =
-          `matrix3d(${Array.from(cardMatrix).join(',')})`;
-      xrIframePanel.style.transform =
-          `matrix3d(${Array.from(iframeMatrix).join(',')})`;
+      const panelCanvasTransform = new DOMMatrix(Array.from(panelMatrix));
+      const cardCanvasTransform = new DOMMatrix(Array.from(cardMatrix));
+      const iframeCanvasTransform = new DOMMatrix(Array.from(iframeMatrix));
+      const identityCanvasTransform = new DOMMatrix();
+      xrPanel.style.transform = panelCanvasTransform.toString();
+      xrCrumpleCard.style.transform = cardCanvasTransform.toString();
+      xrIframePanel.style.transform = iframeCanvasTransform.toString();
 
       let renderer = null;
       const scene = new Scene();
@@ -903,24 +962,48 @@ SOFTWARE.
       let cardTextureDirty = true;
       let iframeTextureDirty = true;
       let iframeLoaded = xrIframePanel.contentDocument?.readyState === 'complete';
-      let iframePreviewLoaded =
-          previewIframePanel.contentDocument?.readyState === 'complete';
       let lastCardAnimationPaint = 0;
+      let htmlPaintRetryPending = false;
 
-      function createElementTexture() {
+      function scheduleHTMLPaintRetry() {
+        if (htmlPaintRetryPending) {
+          return;
+        }
+
+        htmlPaintRetryPending = true;
+        requestAnimationFrame(() => {
+          htmlPaintRetryPending = false;
+          if (typeof xrCanvas.requestPaint === 'function') {
+            xrCanvas.requestPaint();
+          }
+          if (typeof previewCanvas.requestPaint === 'function') {
+            previewCanvas.requestPaint();
+          }
+        });
+      }
+
+      function createElementTexture(width, height) {
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (usesSubImageAPI) {
+          gl.texImage2D(
+              gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0,
+              gl.RGBA, gl.UNSIGNED_BYTE, null);
+        }
         return texture;
       }
 
       function initGLResources() {
-        panelTexture = createElementTexture();
-        cardTexture = createElementTexture();
-        iframeTexture = createElementTexture();
+        panelTexture = createElementTexture(
+            PANEL_TEXTURE_WIDTH, PANEL_TEXTURE_HEIGHT);
+        cardTexture = createElementTexture(
+            CARD_TEXTURE_WIDTH, CARD_TEXTURE_HEIGHT);
+        iframeTexture = createElementTexture(
+            IFRAME_TEXTURE_WIDTH, IFRAME_TEXTURE_HEIGHT);
         panelTextureDirty = true;
         cardTextureDirty = true;
         iframeTextureDirty = true;
@@ -954,26 +1037,44 @@ SOFTWARE.
       }
 
       function uploadElementTexture(
-          texture, node, element, width, height, label) {
+          texture, node, element, width, height, canvasTransform, label) {
         gl.bindTexture(gl.TEXTURE_2D, texture);
         try {
-          gl.texElementImage2D(gl.TEXTURE_2D, gl.RGBA8, element, {
-            width,
-            height,
-          });
+          if (usesSubImageAPI) {
+            gl.texElementSubImage2D(
+                gl.TEXTURE_2D, 0, 0, 0, element, {width, height});
+          } else {
+            gl.texElementImage2D(
+                gl.TEXTURE_2D, gl.RGBA8, element);
+          }
         } catch (error) {
           node.visible = false;
+          if (typeof xrCanvas.clearElementGeometry === 'function') {
+            xrCanvas.clearElementGeometry(element);
+          }
+          element.style.transform = '';
+          if (error.name === 'InvalidStateError') {
+            scheduleHTMLPaintRetry();
+            return false;
+          }
           supportStatus.textContent =
               `Unable to upload the HTML ${label}: ${error.message}`;
           console.error(error);
-          return;
+          return true;
         }
 
         node.visible = true;
+        element.style.transform = canvasTransform.toString();
+        if (typeof xrCanvas.updateElementGeometry === 'function') {
+          xrCanvas.updateElementGeometry(element, {
+            canvasTransform: identityCanvasTransform,
+          });
+        }
+        return true;
       }
 
       function uploadHTMLTextures(event) {
-        if (!gl || typeof gl.texElementImage2D !== 'function') {
+        if (!gl || (!usesSubImageAPI && !usesLegacyImageAPI)) {
           return;
         }
 
@@ -993,39 +1094,54 @@ SOFTWARE.
 
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         if (panelTextureDirty) {
-          panelTextureDirty = false;
-          uploadElementTexture(
+          panelTextureDirty = !uploadElementTexture(
               panelTexture, panelNode, xrPanel,
-              PANEL_TEXTURE_WIDTH, PANEL_TEXTURE_HEIGHT, 'panel');
+              PANEL_TEXTURE_WIDTH, PANEL_TEXTURE_HEIGHT,
+              panelCanvasTransform, 'panel');
         }
         if (cardTextureDirty) {
-          cardTextureDirty = false;
-          uploadElementTexture(
+          cardTextureDirty = !uploadElementTexture(
               cardTexture, crumpleCardNode, xrCrumpleCard,
-              CARD_TEXTURE_WIDTH, CARD_TEXTURE_HEIGHT, 'card');
+              CARD_TEXTURE_WIDTH, CARD_TEXTURE_HEIGHT,
+              cardCanvasTransform, 'card');
         }
         if (iframeTextureDirty && iframeLoaded) {
-          iframeTextureDirty = false;
-          uploadElementTexture(
+          iframeTextureDirty = !uploadElementTexture(
               iframeTexture, iframeNode, xrIframePanel,
-              IFRAME_TEXTURE_WIDTH, IFRAME_TEXTURE_HEIGHT, 'iframe UI');
+              IFRAME_TEXTURE_WIDTH, IFRAME_TEXTURE_HEIGHT,
+              iframeCanvasTransform, 'iframe UI');
         }
       }
 
       function drawPreview() {
         previewContext.reset();
-        const transform = previewContext.drawElementImage(previewPanel, 0, 0);
-        previewPanel.style.transform = transform.toString();
-      }
-
-      function drawIframePreview() {
-        if (!iframePreviewLoaded) {
+        let transform;
+        try {
+          transform =
+              previewContext.drawElementImage(previewCrumpleCard, 0, 0);
+        } catch (error) {
+          if (error.name === 'InvalidStateError') {
+            scheduleHTMLPaintRetry();
+            return;
+          }
+          supportStatus.textContent =
+              `Unable to draw the HTML preview: ${error.message}`;
+          console.error(error);
           return;
         }
-        iframePreviewContext.reset();
-        const transform =
-            iframePreviewContext.drawElementImage(previewIframePanel, 0, 0);
-        previewIframePanel.style.transform = transform.toString();
+        const hasReturnedTransform = transform !== undefined &&
+            typeof transform?.toString === 'function';
+        if (!usesContentAttribute && hasReturnedTransform) {
+          previewCrumpleCard.style.transform = transform.toString();
+        } else if (previewCrumpleCard.style.transform) {
+          previewCrumpleCard.style.transform = '';
+        }
+        if (typeof previewCanvas.updateElementGeometry === 'function') {
+          previewCanvas.updateElementGeometry(previewCrumpleCard, {
+            canvasTransform: usesContentAttribute && hasReturnedTransform ?
+                transform : identityCanvasTransform,
+          });
+        }
       }
 
       function requestHTMLPaint() {
@@ -1038,21 +1154,12 @@ SOFTWARE.
         if (typeof previewCanvas.requestPaint === 'function') {
           previewCanvas.requestPaint();
         }
-        if (typeof iframePreviewCanvas.requestPaint === 'function') {
-          iframePreviewCanvas.requestPaint();
-        }
       }
 
       function requestIframePaint() {
         iframeTextureDirty = true;
         if (typeof xrCanvas.requestPaint === 'function') {
           xrCanvas.requestPaint();
-        }
-      }
-
-      function requestIframePreviewPaint() {
-        if (typeof iframePreviewCanvas.requestPaint === 'function') {
-          iframePreviewCanvas.requestPaint();
         }
       }
 
@@ -1112,27 +1219,27 @@ SOFTWARE.
 
       function setCardCrumpled(value) {
         cardIsCrumpled = value;
-        crumpleState.textContent = value ? 'Crumpled' : 'Flat';
-        crumpleToggle.textContent = value ? 'Restore' : 'Crumple';
-        crumpleToggle.setAttribute('aria-pressed', value ? 'true' : 'false');
+        for (const cardView of crumpleCards) {
+          cardView.state.textContent = value ? 'Crumpled' : 'Flat';
+          cardView.toggle.textContent = value ? 'Restore' : 'Crumple';
+          cardView.toggle.setAttribute(
+              'aria-pressed', value ? 'true' : 'false');
+        }
         if (crumpleCardNode) {
           crumpleCardNode.crumpled = value;
         }
         addLogEntry(value ? 'Field note crumpled' : 'Field note restored');
       }
 
-      xrCrumpleCard.addEventListener('click', () => {
-        setCardCrumpled(!cardIsCrumpled);
-      });
+      for (const cardView of crumpleCards) {
+        cardView.root.addEventListener('click', () => {
+          setCardCrumpled(!cardIsCrumpled);
+        });
+      }
 
       xrIframePanel.addEventListener('load', () => {
         iframeLoaded = true;
         requestIframePaint();
-      });
-
-      previewIframePanel.addEventListener('load', () => {
-        iframePreviewLoaded = true;
-        requestIframePreviewPaint();
       });
 
       window.addEventListener('message', (event) => {
@@ -1142,8 +1249,6 @@ SOFTWARE.
         }
         if (event.source === xrIframePanel.contentWindow) {
           requestIframePaint();
-        } else if (event.source === previewIframePanel.contentWindow) {
-          requestIframePreviewPaint();
         }
       });
 
@@ -1159,11 +1264,8 @@ SOFTWARE.
 
         const canvas2DSupported =
             previewContext !== null &&
-            iframePreviewContext !== null &&
             typeof previewContext.drawElementImage === 'function' &&
-            typeof iframePreviewContext.drawElementImage === 'function' &&
-            typeof previewCanvas.requestPaint === 'function' &&
-            typeof iframePreviewCanvas.requestPaint === 'function';
+            typeof previewCanvas.requestPaint === 'function';
 
         if (!canvas2DSupported) {
           supportStatus.textContent =
@@ -1173,18 +1275,17 @@ SOFTWARE.
 
         previewCanvas.onpaint = drawPreview;
         previewCanvas.requestPaint();
-        iframePreviewCanvas.onpaint = drawIframePreview;
-        iframePreviewCanvas.requestPaint();
 
         if (!gl) {
           supportStatus.textContent = 'WebGL 2 is unavailable.';
           return;
         }
 
-        initGLResources();
-
         const htmlInCanvasSupported =
-            typeof gl.texElementImage2D === 'function' &&
+            (usesLegacyImageAPI ||
+             (usesSubImageAPI &&
+              typeof xrCanvas.updateElementGeometry === 'function' &&
+              typeof xrCanvas.clearElementGeometry === 'function')) &&
             typeof xrCanvas.requestPaint === 'function';
 
         if (!htmlInCanvasSupported) {
@@ -1193,6 +1294,7 @@ SOFTWARE.
           return;
         }
 
+        initGLResources();
         xrCanvas.onpaint = uploadHTMLTextures;
         requestHTMLPaint();
 
