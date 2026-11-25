@@ -1,0 +1,298 @@
+<!doctype html>
+<!--
+Copyright 2026 The Immersive Web Community Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'>
+    <meta name='mobile-web-app-capable' content='yes'>
+    <meta name='apple-mobile-web-app-capable' content='yes'>
+    <link rel='icon' type='image/png' sizes='32x32' href='../favicon-32x32.png'>
+    <link rel='icon' type='image/png' sizes='96x96' href='../favicon-96x96.png'>
+    <link rel='stylesheet' href='../css/common.css'>
+    <title>Spatialized Video</title>
+  </head>
+  <body>
+    <header style='max-width: 800px;'>
+      <details open>
+        <summary>Spatialized Video</summary>
+        <p>
+          This sample plays four 2D videos back to back in a quad media layer, restarting after the
+          last one. When <b>Spatialize</b> is checked, each layer is created with
+          <code>spatialize: true</code>, which asks the browser to show the video in stereo using depth
+          estimated from its frames. Changing the setting takes effect at the next video. Pull the
+          trigger to skip to the next video.
+          <a class='back' href='./index.html'>Back</a>
+        </p>
+        <p>
+          <code>spatialize</code> is only a hint: the browser may ignore it, and the page can't tell
+          whether a video is being spatialized. Because it can only be set when a layer is created, the
+          sample creates a new media layer for each video, which also lets the layer match the video's
+          aspect ratio.
+        </p>
+        <label><input type='checkbox' id='spatialize' checked> Spatialize</label>
+        <p id='status' role='status'>Loading video...</p>
+      </details>
+    </header>
+    <main style='text-align: center;'>
+      <p>Click 'Enter VR' to see content</p>
+    </main>
+    <script type='module'>
+      import { WebXRButton } from '../js/util/webxr-button.js';
+      import { Scene } from '../js/render/scenes/scene.js';
+      import { Renderer, createWebGLContext } from '../js/render/core/renderer.js';
+
+      const VIDEO_URLS = [
+        'https://oculus-mp4.s3.amazonaws.com/146336-789093861_medium.mp4',
+        'https://oculus-mp4.s3.amazonaws.com/185726-876210695_medium.mp4',
+        'https://oculus-mp4.s3.amazonaws.com/228847_medium.mp4',
+        'https://oculus-mp4.s3.amazonaws.com/63967-509068413_medium.mp4',
+      ];
+
+      // Placement in the 'local' reference space. Each video is scaled to fit
+      // within the maximum size, in meters.
+      const VIDEO_MAX_WIDTH = 2.4;
+      const VIDEO_MAX_HEIGHT = 1.8;
+      const VIDEO_POSITION = { x: 0, y: 0, z: -2.5 };
+
+      const statusElement = document.getElementById('status');
+      const spatializeCheckbox = document.getElementById('spatialize');
+      let videoStatus = 'Loading video...';
+      let xrStatus = '';
+
+      // XR globals.
+      let xrButton = null;
+      let xrSupported = false;
+      let xrSession = null;
+      let xrRefSpace = null;
+      let xrMediaBinding = null;
+
+      // Layers, from back to front.
+      let videoLayer = null;
+      let projectionLayer = null;
+      // Video layers that were replaced and are waiting to be destroyed.
+      let retiredLayers = [];
+
+      // WebGL scene globals. The projection layer only shows the controllers
+      // and pointer rays.
+      let gl = null;
+      let renderer = null;
+      const scene = new Scene();
+      scene.enableStats(false);
+
+      // Playlist state.
+      const video = document.createElement('video');
+      video.playsInline = true;
+      video.preload = 'auto';
+      let videoIndex = 0;
+      let videoReady = false;
+
+      function updateStatus() {
+        statusElement.textContent = [videoStatus, xrStatus].filter(Boolean).join(' ');
+      }
+
+      function updateXRButton() {
+        xrButton.enabled = xrSupported && videoReady;
+      }
+
+      function loadVideo(index) {
+        videoIndex = index;
+        video.src = VIDEO_URLS[index];
+      }
+
+      // Plays the next video, and restarts the playlist after the last one.
+      function playNextVideo() {
+        loadVideo((videoIndex + 1) % VIDEO_URLS.length);
+        video.play().catch(() => {});
+      }
+
+      function initVideo() {
+        video.addEventListener('loadedmetadata', () => {
+          if (xrSession) {
+            showVideoLayer();
+            videoStatus = `Video ${videoIndex + 1} of ${VIDEO_URLS.length}` +
+                          `${spatializeCheckbox.checked ? ' (spatialize requested)' : ''}.`;
+          } else {
+            videoStatus = 'Video ready.';
+          }
+          videoReady = true;
+          updateStatus();
+          updateXRButton();
+        });
+
+        video.addEventListener('ended', playNextVideo);
+
+        video.addEventListener('error', () => {
+          videoStatus = `Unable to load ${VIDEO_URLS[videoIndex]}` +
+                        `${video.error ? ` (${video.error.message})` : ''}.`;
+          updateStatus();
+        });
+
+        loadVideo(0);
+      }
+
+      async function initXR() {
+        xrButton = new WebXRButton({ onRequestSession, onEndSession });
+        document.querySelector('header').appendChild(xrButton.domElement);
+
+        if (!navigator.xr || !('XRMediaBinding' in window)) {
+          xrStatus = 'WebXR media layers are not supported.';
+          updateStatus();
+          return;
+        }
+        xrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+        if (!xrSupported) {
+          xrStatus = 'Immersive VR is not supported.';
+          updateStatus();
+        }
+        updateXRButton();
+      }
+
+      async function onRequestSession() {
+        // Start playback while the click still counts as a user gesture.
+        video.play().catch(() => {});
+        let session = null;
+        try {
+          session = await navigator.xr.requestSession('immersive-vr', {
+            requiredFeatures: ['layers'],
+          });
+          await onSessionStarted(session);
+        } catch (error) {
+          video.pause();
+          // Don't leave an empty immersive session running if setup failed.
+          session?.end().catch(() => {});
+          throw error;
+        }
+      }
+
+      function onEndSession(session) {
+        return session.end();
+      }
+
+      function initGL() {
+        if (gl) {
+          return;
+        }
+        gl = createWebGLContext({ xrCompatible: true, webgl2: true });
+        document.body.appendChild(gl.canvas);
+        renderer = new Renderer(gl);
+        scene.setRenderer(renderer);
+      }
+
+      async function onSessionStarted(session) {
+        xrButton.setSession(session);
+        session.addEventListener('end', onSessionEnded);
+        // Pulling the trigger skips to the next video.
+        session.addEventListener('select', playNextVideo);
+
+        initGL();
+        scene.inputRenderer.useProfileControllerMeshes(session);
+        const glBinding = new XRWebGLBinding(session, gl);
+        xrMediaBinding = new XRMediaBinding(session);
+        xrRefSpace = await session.requestReferenceSpace('local');
+
+        // The scene draws into 2D textures, so don't use a texture array.
+        projectionLayer = glBinding.createProjectionLayer({ textureType: 'texture' });
+
+        xrSession = session;
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          showVideoLayer();
+        } else {
+          // The loadedmetadata handler adds the video layer.
+          session.updateRenderState({ layers: [projectionLayer] });
+        }
+        session.requestAnimationFrame(onXRFrame);
+      }
+
+      function onSessionEnded() {
+        xrButton.setSession(null);
+        xrSession = null;
+        xrRefSpace = null;
+        xrMediaBinding = null;
+        videoLayer = null;
+        projectionLayer = null;
+        retiredLayers = [];
+
+        // Start from the beginning next time.
+        video.pause();
+        loadVideo(0);
+      }
+
+      // Replaces the video layer with one for the current video. A new layer
+      // is needed because spatialize can only be set when a layer is created,
+      // and so that the layer matches the video's aspect ratio.
+      function showVideoLayer() {
+        const aspectRatio = video.videoWidth / video.videoHeight;
+        const width = Math.min(VIDEO_MAX_WIDTH, VIDEO_MAX_HEIGHT * aspectRatio);
+        if (videoLayer) {
+          retiredLayers.push(videoLayer);
+        }
+        videoLayer = xrMediaBinding.createQuadLayer(video, {
+          space: xrRefSpace,
+          layout: 'mono',
+          transform: new XRRigidTransform(VIDEO_POSITION),
+          width: width,
+          height: width / aspectRatio,
+          // Ask the browser to show the 2D video in stereo. The browser may
+          // ignore this, and the page can't tell whether it did.
+          spatialize: spatializeCheckbox.checked,
+        });
+
+        // Layers are composited back to front. The projection layer is
+        // transparent except for the controllers, so it goes on top.
+        xrSession.updateRenderState({ layers: [videoLayer, projectionLayer] });
+      }
+
+      function destroyRetiredLayers() {
+        // Wait until the replacement is in the active render state, so that the
+        // old layer is never shown after it's destroyed.
+        const activeLayers = xrSession.renderState.layers;
+        retiredLayers = retiredLayers.filter((layer) => {
+          if (activeLayers.includes(layer)) {
+            return true;
+          }
+          layer.destroy?.();
+          return false;
+        });
+      }
+
+      function onXRFrame(time, frame) {
+        const session = frame.session;
+        session.requestAnimationFrame(onXRFrame);
+
+        destroyRetiredLayers();
+
+        const pose = frame.getViewerPose(xrRefSpace);
+        if (pose) {
+          scene.updateInputSources(frame, xrRefSpace);
+          scene.drawXRFrame(frame, pose, projectionLayer);
+        }
+        scene.endFrame();
+      }
+
+      initXR().catch((error) => {
+        xrStatus = `Unable to initialize WebXR: ${error.message}`;
+        updateStatus();
+      });
+      initVideo();
+    </script>
+  </body>
+</html>
