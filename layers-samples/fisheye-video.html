@@ -1,0 +1,280 @@
+<!doctype html>
+<!--
+Copyright 2026 The Immersive Web Community Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'>
+    <meta name='mobile-web-app-capable' content='yes'>
+    <meta name='apple-mobile-web-app-capable' content='yes'>
+    <link rel='icon' type='image/png' sizes='32x32' href='../favicon-32x32.png'>
+    <link rel='icon' type='image/png' sizes='96x96' href='../favicon-96x96.png'>
+    <link rel='stylesheet' href='../css/common.css'>
+    <title>Fisheye Video</title>
+  </head>
+  <body>
+    <header style='max-width: 800px;'>
+      <details open>
+        <summary>Fisheye Video</summary>
+        <p>
+          This sample plays a 180-degree video, captured through a fisheye lens, in a fisheye media
+          layer. The browser maps the image onto a hemisphere around the viewer using the lens
+          description that's passed to <code>createFisheyeLayer()</code>, so the page doesn't have
+          to convert the video to an equirectangular projection. When the session starts, the
+          layer's <code>visibleFieldOfView</code> opens up from the center. Pull the trigger to
+          pause or resume the video.
+          <a class='back' href='./index.html'>Back</a>
+        </p>
+        <p>
+          The lens description comes from the calibration stored in the video's metadata, which
+          uses the <code>omnidirectional</code> lens model. The video stores a separate view for
+          each eye, so the layer is created with the <code>stereo</code> layout. If the browser
+          can't show the two views separately, both eyes see the primary view.
+        </p>
+        <p id='status' role='status'>Loading video...</p>
+      </details>
+    </header>
+    <main style='text-align: center;'>
+      <p>Click 'Enter VR' to see content</p>
+    </main>
+    <script type='module'>
+      import { WebXRButton } from '../js/util/webxr-button.js';
+      import { Scene } from '../js/render/scenes/scene.js';
+      import { Renderer, createWebGLContext } from '../js/render/core/renderer.js';
+
+      const VIDEO_URL = 'https://oculus-mp4.s3.amazonaws.com/mvhevc_fisheye_3840_72fps_sdr_b3-no-pyramid_light_avg75M_max100M.mov';
+
+      // The lens calibration stored in the video's metadata. It uses the
+      // unified omnidirectional camera model and covers a hemisphere. The
+      // file stores the optical center as 1919.5 / 3840, measured from the
+      // center of the first pixel; the layer measures from the corner of the
+      // image, which puts it at 0.5.
+      const FISHEYE_LENS = {
+        model: 'omnidirectional',
+        fieldOfView: Math.PI,
+        focalX: 0.77377667,
+        focalY: 0.77377667,
+        centerX: 0.5,
+        centerY: 0.5,
+        xi: 1.43165243,
+        radialDistortion: [-0.22331916, 0.14325818],
+        tangentialDistortion: [0, 0],
+      };
+
+      // How long it takes the visible field of view to open up, in ms.
+      const REVEAL_DURATION = 1500;
+
+      const statusElement = document.getElementById('status');
+      let videoStatus = 'Loading video...';
+      let xrStatus = '';
+
+      // XR globals.
+      let xrButton = null;
+      let xrSupported = false;
+      let xrSession = null;
+      let xrRefSpace = null;
+
+      // Layers, from back to front.
+      let fisheyeLayer = null;
+      let projectionLayer = null;
+      let revealStartTime = null;
+
+      // WebGL scene globals. The projection layer only shows the controllers
+      // and pointer rays.
+      let gl = null;
+      let renderer = null;
+      const scene = new Scene();
+      scene.enableStats(false);
+
+      const video = document.createElement('video');
+      video.playsInline = true;
+      video.loop = true;
+      video.preload = 'auto';
+      let videoReady = false;
+
+      function updateStatus() {
+        statusElement.textContent = [videoStatus, xrStatus].filter(Boolean).join(' ');
+      }
+
+      function updateXRButton() {
+        xrButton.enabled = xrSupported && videoReady;
+      }
+
+      function initVideo() {
+        video.addEventListener('loadedmetadata', () => {
+          videoStatus = `Video ready (${video.videoWidth}x${video.videoHeight}).`;
+          videoReady = true;
+          updateStatus();
+          updateXRButton();
+        });
+
+        video.addEventListener('error', () => {
+          videoStatus = `Unable to load the video` +
+                        `${video.error ? ` (${video.error.message})` : ''}. ` +
+                        `This browser may not support this video format at this resolution.`;
+          updateStatus();
+        });
+
+        video.src = VIDEO_URL;
+      }
+
+      async function initXR() {
+        xrButton = new WebXRButton({ onRequestSession, onEndSession });
+        document.querySelector('header').appendChild(xrButton.domElement);
+
+        if (!navigator.xr || !('XRMediaBinding' in window)) {
+          xrStatus = 'WebXR media layers are not supported.';
+          updateStatus();
+          return;
+        }
+        if (!('createFisheyeLayer' in XRMediaBinding.prototype)) {
+          xrStatus = 'Fisheye media layers are not supported.';
+          updateStatus();
+          return;
+        }
+        xrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+        if (!xrSupported) {
+          xrStatus = 'Immersive VR is not supported.';
+          updateStatus();
+        }
+        updateXRButton();
+      }
+
+      async function onRequestSession() {
+        // Start playback while the click still counts as a user gesture.
+        video.play().catch(() => {});
+        let session = null;
+        try {
+          session = await navigator.xr.requestSession('immersive-vr', {
+            requiredFeatures: ['layers'],
+          });
+          await onSessionStarted(session);
+        } catch (error) {
+          video.pause();
+          // Don't leave an empty immersive session running if setup failed.
+          session?.end().catch(() => {});
+          throw error;
+        }
+      }
+
+      function onEndSession(session) {
+        return session.end();
+      }
+
+      function initGL() {
+        if (gl) {
+          return;
+        }
+        gl = createWebGLContext({ xrCompatible: true, webgl2: true });
+        document.body.appendChild(gl.canvas);
+        renderer = new Renderer(gl);
+        scene.setRenderer(renderer);
+      }
+
+      function togglePlayback() {
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      }
+
+      async function onSessionStarted(session) {
+        xrButton.setSession(session);
+        session.addEventListener('end', onSessionEnded);
+        // Pulling the trigger pauses or resumes the video.
+        session.addEventListener('select', togglePlayback);
+
+        initGL();
+        scene.inputRenderer.useProfileControllerMeshes(session);
+        const glBinding = new XRWebGLBinding(session, gl);
+        const mediaBinding = new XRMediaBinding(session);
+        xrRefSpace = await session.requestReferenceSpace('local');
+
+        // With an identity transform, the lens' optical axis points straight
+        // ahead along -Z. Start with nothing visible and open it up in
+        // onXRFrame.
+        fisheyeLayer = mediaBinding.createFisheyeLayer(video, {
+          space: xrRefSpace,
+          // The video has a full view for each eye. Because both lenses share
+          // a calibration, rightLens isn't needed.
+          layout: 'stereo',
+          lens: FISHEYE_LENS,
+          visibleFieldOfView: 0,
+        });
+
+        // The scene draws into 2D textures, so don't use a texture array.
+        projectionLayer = glBinding.createProjectionLayer({ textureType: 'texture' });
+
+        // Layers are composited back to front. The projection layer is
+        // transparent except for the controllers, so it goes on top.
+        session.updateRenderState({ layers: [fisheyeLayer, projectionLayer] });
+
+        xrSession = session;
+        session.requestAnimationFrame(onXRFrame);
+      }
+
+      function onSessionEnded() {
+        xrButton.setSession(null);
+        xrSession = null;
+        xrRefSpace = null;
+        fisheyeLayer = null;
+        projectionLayer = null;
+        revealStartTime = null;
+
+        // Start from the beginning next time.
+        video.pause();
+        video.currentTime = 0;
+      }
+
+      // Gradually widens the visible cone until it covers the whole lens.
+      function updateReveal(time) {
+        if (revealStartTime === null) {
+          revealStartTime = time;
+        }
+        const progress = Math.min((time - revealStartTime) / REVEAL_DURATION, 1);
+        if (fisheyeLayer.visibleFieldOfView < FISHEYE_LENS.fieldOfView) {
+          fisheyeLayer.visibleFieldOfView = progress * FISHEYE_LENS.fieldOfView;
+        }
+      }
+
+      function onXRFrame(time, frame) {
+        const session = frame.session;
+        session.requestAnimationFrame(onXRFrame);
+
+        updateReveal(time);
+
+        const pose = frame.getViewerPose(xrRefSpace);
+        if (pose) {
+          scene.updateInputSources(frame, xrRefSpace);
+          scene.drawXRFrame(frame, pose, projectionLayer);
+        }
+        scene.endFrame();
+      }
+
+      initXR().catch((error) => {
+        xrStatus = `Unable to initialize WebXR: ${error.message}`;
+        updateStatus();
+      });
+      initVideo();
+    </script>
+  </body>
+</html>
